@@ -68,17 +68,26 @@ def _get_oauth_session() -> OAuth2:
 
 
 def _get_league(sc: OAuth2) -> yfa.League:
-    """Get the Yahoo Fantasy league object."""
+    """Get the Yahoo Fantasy league object.
+
+    Attaches ``league_key`` as an attribute on the returned League so
+    downstream helpers (e.g. ``_get_player_ownership``) can reference it
+    without reconstructing the key.
+    """
     gm = yfa.Game(sc, YAHOO_SPORT)
     league_ids = gm.league_ids(year=2026)
     # Try to find the configured league
     for lid in league_ids:
         if YAHOO_LEAGUE_ID in lid:
-            return gm.to_league(lid)
+            lg = gm.to_league(lid)
+            lg.league_key = lid          # stash for later use
+            return lg
     # Fallback: try constructing the key directly
     game_id = gm.game_id()
     league_key = f"{game_id}.l.{YAHOO_LEAGUE_ID}"
-    return gm.to_league(league_key)
+    lg = gm.to_league(league_key)
+    lg.league_key = league_key           # stash for later use
+    return lg
 
 
 def _format_player(player: dict) -> dict:
