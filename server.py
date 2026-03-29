@@ -9,7 +9,8 @@ Tools:
     - yahoo_get_standings: League standings
     - yahoo_get_scoreboard: Current/past week matchups
     - yahoo_search_free_agents: Search available free agents
-    - yahoo_get_player_stats: Stats for a specific player
+    - yahoo_get_player_stats: Stats for a specific player (includes ownership)
+    - yahoo_get_player_ownership: Quick lookup of who owns a player
     - yahoo_get_league_settings: League rules and configuration
     - yahoo_get_matchups: Head-to-head matchup details
 """
@@ -95,6 +96,95 @@ def _format_player(player: dict) -> dict:
         info["player_id"] = player.get("player_id", "")
         info["percent_owned"] = player.get("percent_owned", "")
     return {k: v for k, v in info.items() if v != "" and v != []}
+
+
+def _get_player_ownership(sc: OAuth2, league_key: str, player_id) -> dict:
+    """Look up which fantasy team owns a player via the Yahoo ownership API.
+
+    Uses the /players;player_keys={key}/ownership sub-resource to determine
+    whether a player is rostered, on waivers, or a free agent — and if
+    rostered, which fantasy team owns them.
+
+    Args:
+        sc: Active OAuth2 session.
+        league_key: The league key (e.g. '469.l.60467').
+        player_id: The Yahoo player ID (numeric).
+
+    Returns:
+        dict with ownership details: owned (bool), owner_team_key,
+        owner_team_name, and ownership_type.
+    """
+    try:
+        game_id = league_key.split(".")[0]
+        player_key = f"{game_id}.p.{player_id}"
+        url = (
+            f"https://fantasysports.yahooapis.com/fantasy/v2/"
+            f"league/{league_key}/players;player_keys={player_key}"
+            f"/ownership?format=json"
+        )
+        resp = sc.session.get(url)
+        if resp.status_code != 200:
+            logger.warning(
+                f"Ownership API returned {resp.status_code} for player {player_id}"
+            )
+            return {"ownership_error": f"HTTP {resp.status_code}"}
+
+        data = resp.json()
+
+        # Navigate Yahoo's nested response structure:
+        # fantasy_content.league[1].players."0".player[1].ownership
+        fc = data.get("fantasy_content", {})
+        league_data = fc.get("league", [])
+
+        if not isinstance(league_data, list) or len(league_data) < 2:
+            return {"owned": False, "ownership_type": "unknown"}
+
+        players_block = league_data[1].get("players", {})
+        player_entry = players_block.get("0", {}).get("player", [])
+
+        # The player entry is a list; ownership is in one of the dicts
+        for item in player_entry:
+            if isinstance(item, dict) and "ownership" in item:
+                ownership = item["ownership"]
+                otype = ownership.get("ownership_type", "")
+
+                if otype == "team":
+                    return {
+                        "owned": True,
+                        "ownership_type": "team",
+                        "owner_team_key": ownership.get("owner_team_key", ""),
+                        "owner_team_name": ownership.get("owner_team_name", ""),
+                    }
+                else:
+                    return {
+                        "owned": False,
+                        "ownership_type": otype,  # "freeagents", "waivers", etc.
+                    }
+
+            # Sometimes it's nested inside a list within the list
+            if isinstance(item, list):
+                for sub in item:
+                    if isinstance(sub, dict) and "ownership" in sub:
+                        ownership = sub["ownership"]
+                        otype = ownership.get("ownership_type", "")
+                        if otype == "team":
+                            return {
+                                "owned": True,
+                                "ownership_type": "team",
+                                "owner_team_key": ownership.get("owner_team_key", ""),
+                                "owner_team_name": ownership.get("owner_team_name", ""),
+                            }
+                        else:
+                            return {
+                                "owned": False,
+                                "ownership_type": otype,
+                            }
+
+        return {"owned": False, "ownership_type": "unknown"}
+
+    except Exception as e:
+        logger.warning(f"Failed to get ownership for player {player_id}: {e}")
+        return {"ownership_error": str(e)}
 
 
 def _handle_error(e: Exception) -> str:
@@ -205,6 +295,18 @@ class GetPlayerStatsInput(BaseModel):
     player_name: str = Field(
         ...,
         description="Full or partial player name to search for (e.g. 'Ohtani', 'Juan Soto').",
+        min_length=2,
+        max_length=100,
+    )
+
+
+class GetPlayerOwnershipInput(BaseModel):
+    """Input for looking up player ownership."""
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    player_name: str = Field(
+        ...,
+        description="Full or partial player name to look up (e.g. 'Ohtani', 'Juan Soto').",
         min_length=2,
         max_length=100,
     )
@@ -472,15 +574,16 @@ async def yahoo_get_player_stats(params: GetPlayerStatsInput) -> str:
     """Search for a player by name and return their stats and details.
 
     Searches across all players (rostered and free agents) by name.
-    Returns stats, ownership info, eligible positions, and team.
+    Returns stats, ownership info (including which fantasy team owns them),
+    eligible positions, and MLB team.
 
     Args:
         params (GetPlayerStatsInput): Validated input containing:
             - player_name (str): Full or partial player name to search.
 
     Returns:
-        str: JSON object with player details and stats, or an error
-             if the player is not found.
+        str: JSON object with player details, stats, and ownership info,
+             or an error if the player is not found.
     """
     try:
         sc = _get_oauth_session()
@@ -506,12 +609,99 @@ async def yahoo_get_player_stats(params: GetPlayerStatsInput) -> str:
         formatted = []
         for player in results[:5]:  # Cap at 5 results
             info = _format_player(player) if isinstance(player, dict) else player
+
+            # Fetch ownership for each matched player
+            pid = None
+            if isinstance(info, dict):
+                pid = info.get("player_id")
+            elif isinstance(player, dict):
+                pid = player.get("player_id")
+
+            if pid:
+                ownership = _get_player_ownership(sc, lg.league_key, pid)
+                if isinstance(info, dict):
+                    info["ownership"] = ownership
+                else:
+                    info = {"player": info, "ownership": ownership}
+
             formatted.append(info)
 
         return json.dumps({
             "query": params.player_name,
             "matches": len(formatted),
             "players": formatted,
+        }, indent=2, default=str)
+
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool(
+    name="yahoo_get_player_ownership",
+    annotations={
+        "title": "Get Player Ownership",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def yahoo_get_player_ownership(params: GetPlayerOwnershipInput) -> str:
+    """Look up which fantasy team owns a specific player.
+
+    Searches for a player by name, then checks the Yahoo ownership API
+    to determine if they are rostered (and by whom), on waivers, or a
+    free agent. Faster than scanning rosters manually.
+
+    Args:
+        params (GetPlayerOwnershipInput): Validated input containing:
+            - player_name (str): Full or partial player name to look up.
+
+    Returns:
+        str: JSON object with player name, MLB team, and ownership details
+             (owner team name/key if rostered, or availability status).
+    """
+    try:
+        sc = _get_oauth_session()
+        lg = _get_league(sc)
+
+        # Find the player first
+        try:
+            results = lg.player_details(params.player_name)
+        except Exception:
+            results = None
+
+        if not results:
+            return json.dumps({
+                "error": f"No player found matching '{params.player_name}'.",
+                "suggestion": "Try a shorter or different spelling of the name.",
+            })
+
+        if isinstance(results, dict):
+            results = [results]
+
+        # Look up ownership for the first (best) match
+        player = results[0]
+        info = _format_player(player) if isinstance(player, dict) else {}
+        pid = info.get("player_id") or (
+            player.get("player_id") if isinstance(player, dict) else None
+        )
+
+        if not pid:
+            return json.dumps({
+                "error": "Could not determine player ID for ownership lookup.",
+                "player": info,
+            })
+
+        ownership = _get_player_ownership(sc, lg.league_key, pid)
+
+        return json.dumps({
+            "query": params.player_name,
+            "player_name": info.get("name", params.player_name),
+            "player_id": pid,
+            "mlb_team": info.get("editorial_team_abbr", ""),
+            "eligible_positions": info.get("eligible_positions", []),
+            "ownership": ownership,
         }, indent=2, default=str)
 
     except Exception as e:
