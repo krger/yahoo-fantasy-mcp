@@ -1,0 +1,14 @@
+[project]
+name = "yahoo-fantasy-mcp"
+version = "0.1.0"
+description = "MCP server for Yahoo Fantasy Baseball"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp[cli]>=1.2.0",
+    "yahoo_fantasy_api",
+    "yahoo_oauth",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
