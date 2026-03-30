@@ -13,6 +13,7 @@ Tools:
     - yahoo_get_player_ownership: Quick lookup of who owns a player
     - yahoo_get_league_settings: League rules and configuration
     - yahoo_get_matchups: Head-to-head matchup details
+    - yahoo_get_transactions: League transaction history (adds, drops, trades)
 """
 
 import json
@@ -351,6 +352,42 @@ class GetMatchupInput(BaseModel):
         description="Scoring week. If omitted, returns the current week.",
         ge=1,
         le=26,
+    )
+
+
+class TransactionType(str, Enum):
+    """Types of transactions to filter by."""
+    ADD = "add"
+    DROP = "drop"
+    ADD_DROP = "add/drop"
+    TRADE = "trade"
+
+
+class GetTransactionsInput(BaseModel):
+    """Input for retrieving league transaction history."""
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    transaction_types: Optional[List[TransactionType]] = Field(
+        default=None,
+        description=(
+            "Filter by transaction type(s). Options: add, drop, add/drop, trade. "
+            "If omitted, returns all transaction types."
+        ),
+    )
+    team_number: Optional[int] = Field(
+        default=None,
+        description=(
+            "Filter to transactions involving a specific team (1-based). "
+            "If omitted, returns transactions for all teams."
+        ),
+        ge=1,
+        le=30,
+    )
+    count: Optional[int] = Field(
+        default=25,
+        description="Number of transactions to return (default 25, max 50).",
+        ge=1,
+        le=50,
     )
 
 
@@ -809,6 +846,254 @@ async def yahoo_get_matchup(params: GetMatchupInput) -> str:
             "matchup": matchup,
         }
         return json.dumps(result, indent=2, default=str)
+
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool(
+    name="yahoo_get_transactions",
+    annotations={
+        "title": "Get League Transactions",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def yahoo_get_transactions(params: GetTransactionsInput) -> str:
+    """Get recent transaction history for the league.
+
+    Returns adds, drops, add/drops, and trades across the league so you
+    can see what other managers are doing.  Filter by transaction type
+    or by a specific team.
+
+    Args:
+        params (GetTransactionsInput): Validated input containing:
+            - transaction_types (Optional[list]): Filter by add, drop, add/drop, trade.
+            - team_number (Optional[int]): Filter to a specific team (1-based).
+            - count (Optional[int]): Number of results (default 25, max 50).
+
+    Returns:
+        str: JSON list of recent transactions with player/team details.
+    """
+    try:
+        sc = _get_oauth_session()
+        lg = _get_league(sc)
+
+        # Build the transactions API URL
+        url = (
+            f"https://fantasysports.yahooapis.com/fantasy/v2/"
+            f"league/{lg.league_key}/transactions"
+        )
+
+        # Add type filter if specified
+        if params.transaction_types:
+            types_str = ",".join(t.value for t in params.transaction_types)
+            url += f";types={types_str}"
+
+        # Add count
+        url += f";count={params.count}"
+
+        url += "?format=json"
+
+        resp = sc.session.get(url)
+        if resp.status_code != 200:
+            return json.dumps({
+                "error": f"Yahoo API returned HTTP {resp.status_code}",
+            })
+
+        data = resp.json()
+
+        # Dump the raw response structure for debugging
+        logger.debug(
+            "Raw transactions response:\n%s",
+            json.dumps(data, indent=2, default=str)[:5000],
+        )
+
+        # Navigate Yahoo's nested response:
+        # fantasy_content.league[1].transactions
+        fc = data.get("fantasy_content", {})
+        league_data = fc.get("league", [])
+
+        if not isinstance(league_data, list) or len(league_data) < 2:
+            return json.dumps({"transactions": [], "count": 0})
+
+        # league_data[1] is usually a dict, but Yahoo sometimes wraps
+        # it in a list of dicts — handle both.
+        raw_txns = league_data[1]
+        if isinstance(raw_txns, dict):
+            txns_block = raw_txns.get("transactions", {})
+        elif isinstance(raw_txns, list):
+            txns_block = {}
+            for item in raw_txns:
+                if isinstance(item, dict) and "transactions" in item:
+                    txns_block = item["transactions"]
+                    break
+        else:
+            txns_block = {}
+
+        # If filtering by team, resolve team_key
+        filter_team_key = None
+        if params.team_number is not None:
+            teams = lg.teams()
+            team_keys = list(teams.keys())
+            idx = params.team_number - 1
+            if idx >= len(team_keys):
+                return json.dumps({
+                    "error": f"Team number {params.team_number} not found. "
+                             f"League has {len(team_keys)} teams.",
+                })
+            filter_team_key = team_keys[idx]
+
+        # Parse each transaction
+        transactions = []
+        for key, txn_data in txns_block.items():
+            if key == "count":
+                continue
+            if not isinstance(txn_data, dict):
+                continue
+
+            txn_entry = txn_data.get("transaction", [])
+            if not isinstance(txn_entry, list) or len(txn_entry) < 2:
+                continue
+
+            # First element has transaction metadata.
+            # For add/drop transactions Yahoo may wrap metadata in a list
+            # of dicts instead of a single dict.
+            raw_meta = txn_entry[0]
+            if isinstance(raw_meta, dict):
+                meta = raw_meta
+            elif isinstance(raw_meta, list):
+                meta = {}
+                for m in raw_meta:
+                    if isinstance(m, dict):
+                        meta.update(m)
+            else:
+                meta = {}
+            txn_type = meta.get("type", "")
+            timestamp = meta.get("timestamp", "")
+            status = meta.get("status", "")
+
+            # Second element has the players involved.
+            # For add/drop transactions Yahoo may return a list instead
+            # of a dict, so we need to search for the "players" key.
+            raw_players = txn_entry[1] if len(txn_entry) > 1 else {}
+            if isinstance(raw_players, dict):
+                players_data = raw_players.get("players", {})
+            elif isinstance(raw_players, list):
+                players_data = {}
+                for item in raw_players:
+                    if isinstance(item, dict) and "players" in item:
+                        players_data = item["players"]
+                        break
+            else:
+                players_data = {}
+
+            players = []
+            if not isinstance(players_data, dict):
+                # If players_data is a list, try to find dicts with player keys
+                if isinstance(players_data, list):
+                    converted = {}
+                    for idx_p, pd in enumerate(players_data):
+                        if isinstance(pd, dict):
+                            converted[str(idx_p)] = pd
+                    players_data = converted
+                else:
+                    players_data = {}
+            for pkey, pval in players_data.items():
+                if pkey == "count":
+                    continue
+                if not isinstance(pval, dict):
+                    continue
+
+                player_entry = pval.get("player", [])
+                if not isinstance(player_entry, list):
+                    continue
+
+                # Extract player info from the nested lists
+                player_info = {}
+                transaction_data = {}
+
+                def _extract_name(val):
+                    """Yahoo returns name as a dict or a plain string."""
+                    if isinstance(val, dict):
+                        return val.get("full", str(val))
+                    return str(val)
+
+                def _extract_player_fields(d):
+                    """Pull player fields from a dict, guarding types."""
+                    if "name" in d:
+                        player_info["name"] = _extract_name(d["name"])
+                    if "editorial_team_abbr" in d:
+                        player_info["mlb_team"] = d["editorial_team_abbr"]
+                    if "display_position" in d:
+                        player_info["position"] = d["display_position"]
+
+                def _extract_txn_data(d):
+                    """Pull transaction_data from a dict, guarding types."""
+                    td = d["transaction_data"]
+                    if not isinstance(td, dict):
+                        # Sometimes wrapped in a list of dicts
+                        if isinstance(td, list):
+                            merged = {}
+                            for item_td in td:
+                                if isinstance(item_td, dict):
+                                    merged.update(item_td)
+                            td = merged
+                        else:
+                            return
+                    transaction_data["action"] = td.get("type", "")
+                    dest = td.get("destination_team_name", "")
+                    src = td.get("source_team_name", "")
+                    dest_key = td.get("destination_team_key", "")
+                    src_key = td.get("source_team_key", "")
+                    if dest:
+                        transaction_data["destination_team"] = dest
+                        transaction_data["destination_team_key"] = dest_key
+                    if src:
+                        transaction_data["source_team"] = src
+                        transaction_data["source_team_key"] = src_key
+
+                for item in player_entry:
+                    if isinstance(item, list):
+                        for sub in item:
+                            if isinstance(sub, dict):
+                                _extract_player_fields(sub)
+                    elif isinstance(item, dict):
+                        _extract_player_fields(item)
+                        if "transaction_data" in item:
+                            _extract_txn_data(item)
+
+                players.append({**player_info, **transaction_data})
+
+            # If filtering by team, check if this team is involved
+            if filter_team_key:
+                team_involved = any(
+                    p.get("destination_team_key") == filter_team_key
+                    or p.get("source_team_key") == filter_team_key
+                    for p in players
+                )
+                if not team_involved:
+                    continue
+
+            transactions.append({
+                "type": txn_type,
+                "status": status,
+                "timestamp": timestamp,
+                "players": players,
+            })
+
+        return json.dumps({
+            "league_id": YAHOO_LEAGUE_ID,
+            "filters": {
+                "types": [t.value for t in params.transaction_types]
+                if params.transaction_types else "all",
+                "team_number": params.team_number,
+            },
+            "count": len(transactions),
+            "transactions": transactions,
+        }, indent=2, default=str)
 
     except Exception as e:
         return _handle_error(e)
