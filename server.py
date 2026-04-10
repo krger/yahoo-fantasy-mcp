@@ -20,6 +20,7 @@ import json
 import os
 import sys
 import logging
+from datetime import date, datetime
 from contextlib import asynccontextmanager
 from typing import Optional, List
 from enum import Enum
@@ -263,6 +264,16 @@ class GetRosterInput(BaseModel):
         ge=1,
         le=26,
     )
+    day: Optional[str] = Field(
+        default=None,
+        description=(
+            "Specific date in YYYY-MM-DD format to view the roster as it was "
+            "(or is) set for that day. Useful for checking past lineups or "
+            "planning future ones. Mutually exclusive with 'week'; if both are "
+            "provided, 'day' takes precedence."
+        ),
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+    )
 
 
 class SearchFreeAgentsInput(BaseModel):
@@ -410,12 +421,15 @@ async def yahoo_get_roster(params: GetRosterInput) -> str:
 
     Returns each player's name, position, eligible positions, MLB team,
     and injury status. Use team_number to view another manager's roster,
-    or omit it for your own.
+    or omit it for your own. Pass 'day' (YYYY-MM-DD) to see the roster
+    as set for a specific date (past or future), or 'week' for a scoring
+    week. If both are given, 'day' wins.
 
     Args:
         params (GetRosterInput): Validated input parameters containing:
             - team_number (Optional[int]): Team number (1-based), or None for own team.
             - week (Optional[int]): Scoring week, or None for current week.
+            - day (Optional[str]): Date string YYYY-MM-DD for a specific day's lineup.
 
     Returns:
         str: JSON list of players on the roster.
@@ -441,7 +455,21 @@ async def yahoo_get_roster(params: GetRosterInput) -> str:
                     break
 
         tm = lg.to_team(team_key)
-        roster = tm.roster(week=params.week) if params.week else tm.roster()
+
+        # 'day' takes precedence over 'week' when both are provided.
+        day_obj = None
+        if params.day:
+            try:
+                day_obj = datetime.strptime(params.day, "%Y-%m-%d").date()
+            except ValueError:
+                return f"Error: Invalid day '{params.day}'. Expected YYYY-MM-DD."
+
+        if day_obj is not None:
+            roster = tm.roster(day=day_obj)
+        elif params.week is not None:
+            roster = tm.roster(week=params.week)
+        else:
+            roster = tm.roster()
 
         team_name = teams[team_key].get("name", f"Team {params.team_number or '?'}")
         formatted = [_format_player(p) for p in roster]
@@ -449,7 +477,9 @@ async def yahoo_get_roster(params: GetRosterInput) -> str:
         result = {
             "team_name": team_name,
             "team_key": team_key,
-            "week": params.week or "current",
+            "week": params.week if params.day is None else None,
+            "day": params.day,
+            "scope": "day" if params.day else ("week" if params.week else "current"),
             "roster_count": len(formatted),
             "players": formatted,
         }
