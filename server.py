@@ -20,6 +20,7 @@ import json
 import os
 import sys
 import logging
+from datetime import date, datetime
 from contextlib import asynccontextmanager
 from typing import Optional, List
 from enum import Enum
@@ -263,6 +264,16 @@ class GetRosterInput(BaseModel):
         ge=1,
         le=26,
     )
+    day: Optional[str] = Field(
+        default=None,
+        description=(
+            "Specific date in YYYY-MM-DD format to view the roster as it was "
+            "(or is) set for that day. Useful for checking past lineups or "
+            "planning future ones. Mutually exclusive with 'week'; if both are "
+            "provided, 'day' takes precedence."
+        ),
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+    )
 
 
 class SearchFreeAgentsInput(BaseModel):
@@ -410,12 +421,15 @@ async def yahoo_get_roster(params: GetRosterInput) -> str:
 
     Returns each player's name, position, eligible positions, MLB team,
     and injury status. Use team_number to view another manager's roster,
-    or omit it for your own.
+    or omit it for your own. Pass 'day' (YYYY-MM-DD) to see the roster
+    as set for a specific date (past or future), or 'week' for a scoring
+    week. If both are given, 'day' wins.
 
     Args:
         params (GetRosterInput): Validated input parameters containing:
             - team_number (Optional[int]): Team number (1-based), or None for own team.
             - week (Optional[int]): Scoring week, or None for current week.
+            - day (Optional[str]): Date string YYYY-MM-DD for a specific day's lineup.
 
     Returns:
         str: JSON list of players on the roster.
@@ -441,7 +455,21 @@ async def yahoo_get_roster(params: GetRosterInput) -> str:
                     break
 
         tm = lg.to_team(team_key)
-        roster = tm.roster(week=params.week) if params.week else tm.roster()
+
+        # 'day' takes precedence over 'week' when both are provided.
+        day_obj = None
+        if params.day:
+            try:
+                day_obj = datetime.strptime(params.day, "%Y-%m-%d").date()
+            except ValueError:
+                return f"Error: Invalid day '{params.day}'. Expected YYYY-MM-DD."
+
+        if day_obj is not None:
+            roster = tm.roster(day=day_obj)
+        elif params.week is not None:
+            roster = tm.roster(week=params.week)
+        else:
+            roster = tm.roster()
 
         team_name = teams[team_key].get("name", f"Team {params.team_number or '?'}")
         formatted = [_format_player(p) for p in roster]
@@ -449,7 +477,9 @@ async def yahoo_get_roster(params: GetRosterInput) -> str:
         result = {
             "team_name": team_name,
             "team_key": team_key,
-            "week": params.week or "current",
+            "week": params.week if params.day is None else None,
+            "day": params.day,
+            "scope": "day" if params.day else ("week" if params.week else "current"),
             "roster_count": len(formatted),
             "players": formatted,
         }
@@ -665,6 +695,24 @@ async def yahoo_get_player_stats(params: GetPlayerStatsInput) -> str:
 
             if pid:
                 ownership = _get_player_ownership(sc, lg.league_key, pid)
+                # BUGFIX: lg.player_details() never hits /stats, so fetch it explicitly.
+                try:
+                    game_key = str(lg.league_key).split(".")[0]
+                    pkey = f"{game_key}.p.{pid}"
+                    stats_url = (
+                        "https://fantasysports.yahooapis.com/fantasy/v2/"
+                        f"players;player_keys={pkey}/stats?format=json"
+                    )
+                    sresp = sc.session.get(stats_url)
+                    logger.info(f"player_stats GET {stats_url} -> {sresp.status_code} body[:200]={sresp.text[:200]!r}")
+                    sresp.raise_for_status()
+                    sdata = sresp.json()
+                    if isinstance(info, dict):
+                        info["player_stats"] = sdata.get("fantasy_content", sdata)
+                except Exception as se:
+                    logger.error(f"player_stats fetch failed for {pid}: {se}")
+                    if isinstance(info, dict):
+                        info["player_stats_error"] = str(se)
                 if isinstance(info, dict):
                     info["ownership"] = ownership
                 else:
@@ -1143,6 +1191,287 @@ async def yahoo_list_teams() -> str:
     except Exception as e:
         return _handle_error(e)
 
+
+# ---------------------------------------------------------------------------
+# Batch players + player notes (read-only)
+# ---------------------------------------------------------------------------
+
+class GetPlayersBatchInput(BaseModel):
+    """Input for batch player lookup."""
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    player_names: List[str] = Field(
+        ...,
+        description="List of player names to resolve and fetch in one batched Yahoo API call.",
+        min_length=1,
+        max_length=25,
+    )
+
+
+class GetPlayerNotesInput(BaseModel):
+    """Input for fetching a single player's notes / injury status."""
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    player_name: str = Field(
+        ...,
+        description="Full or partial player name. A player_key (e.g. 'mlb.p.12345') is also accepted.",
+        min_length=1,
+    )
+
+
+def _resolve_player_key(lg: "yfa.League", name_or_key: str) -> Optional[str]:
+    """Resolve a name to a Yahoo player_key. Pass-through if already a key."""
+    if "." in name_or_key and name_or_key.split(".")[0] in ("mlb", "nfl", "nba", "nhl"):
+        return name_or_key
+    try:
+        details = lg.player_details(name_or_key)
+    except Exception:
+        return None
+    if isinstance(details, dict):
+        details = [details]
+    if not isinstance(details, list) or not details:
+        return None
+    first = details[0]
+    if not isinstance(first, dict):
+        return None
+    pid = first.get("player_id")
+    if pid is None:
+        return None
+    # Yahoo MLB player_key format: <game_code>.p.<player_id>
+    game_code = lg.league_key.split(".")[0] if "." in lg.league_key else "mlb"
+    return f"{game_code}.p.{pid}"
+
+
+@mcp.tool(
+    name="yahoo_get_players_batch",
+    annotations={
+        "title": "Get Players (Batch)",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def yahoo_get_players_batch(params: GetPlayersBatchInput) -> str:
+    """Fetch stats and details for multiple players in a single Yahoo API call.
+
+    Resolves each input name to a player_key, then issues ONE request using
+    ;player_keys=key1,key2,... — far cheaper than calling yahoo_get_player_stats
+    in a loop. Partial failures are tolerated: unresolved names are returned
+    in the 'unresolved' list and do not abort the batch.
+
+    Args:
+        params (GetPlayersBatchInput): Validated input containing:
+            - player_names (List[str]): 1-25 player names (or player_keys).
+
+    Returns:
+        str: JSON object with 'players' (list, one entry per resolved player),
+             'unresolved' (list of names that could not be resolved), and
+             'requested' count.
+    """
+    try:
+        sc = _get_oauth_session()
+        lg = _get_league(sc)
+
+        resolved: list = []
+        unresolved: list = []
+        name_by_key: dict = {}
+        for name in params.player_names:
+            # Per-name guard: Yahoo occasionally returns empty/non-JSON
+            # bodies for individual name lookups, which can raise
+            # JSONDecodeError from inside yfa's parser. Catch per-name so
+            # one bad response cannot abort the whole batch — push failures
+            # into `unresolved` instead. Same class of bug as the
+            # transactions handler fix (inconsistent Yahoo response types).
+            key = None
+            try:
+                key = _resolve_player_key(lg, name)
+            except (json.JSONDecodeError, ValueError, TypeError, KeyError) as e:
+                logger.warning(
+                    f"Resolve failed for '{name}' (bad/empty Yahoo response): "
+                    f"{type(e).__name__}: {e}"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Unexpected resolve error for '{name}': "
+                    f"{type(e).__name__}: {e}"
+                )
+            if key:
+                resolved.append(key)
+                name_by_key[key] = name
+            else:
+                unresolved.append(name)
+
+        players_out: list = []
+        if resolved:
+            keys_csv = ",".join(resolved)
+            url = (
+                "https://fantasysports.yahooapis.com/fantasy/v2/"
+                f"players;player_keys={keys_csv}/stats?format=json"
+            )
+            try:
+                # BUGFIX: do NOT pass params={"format":"json"} — URL already has it,
+                # and the extra kwarg on an OAuth1 session was producing an XML error
+                # page that blew up json.loads with "Expecting value: line 1 column 1".
+                resp = sc.session.get(url)
+                logger.info(f"players_batch GET {url} -> {resp.status_code} body[:200]={resp.text[:200]!r}")
+                resp.raise_for_status()
+                if not resp.text.strip():
+                    raise ValueError("Empty response body from Yahoo batch endpoint")
+                data = resp.json()
+            except Exception as e:
+                logger.error(f"Batch fetch failed: {e}")
+                return _handle_error(e)
+
+            fc = data.get("fantasy_content", {}) if isinstance(data, dict) else {}
+            players_node = fc.get("players", {}) if isinstance(fc, dict) else {}
+            if isinstance(players_node, list):
+                # Some responses wrap players in a list
+                for item in players_node:
+                    if isinstance(item, dict) and "players" in item:
+                        players_node = item["players"]
+                        break
+
+            if isinstance(players_node, dict):
+                count = players_node.get("count", 0)
+                for i in range(int(count) if isinstance(count, (int, str)) and str(count).isdigit() else 0):
+                    pval = players_node.get(str(i))
+                    if not isinstance(pval, dict):
+                        continue
+                    pentry = pval.get("player")
+                    if not isinstance(pentry, list) or not pentry:
+                        continue
+                    meta = pentry[0]
+                    flat: dict = {}
+                    if isinstance(meta, list):
+                        for m in meta:
+                            if isinstance(m, dict):
+                                flat.update(m)
+                    elif isinstance(meta, dict):
+                        flat.update(meta)
+                    info = _format_player(flat) if flat else {}
+                    # Attach stats block if present (second element)
+                    if len(pentry) > 1 and isinstance(pentry[1], dict):
+                        info["stats_raw"] = pentry[1]
+                    players_out.append(info)
+
+        return json.dumps({
+            "requested": len(params.player_names),
+            "resolved": len(resolved),
+            "unresolved": unresolved,
+            "players": players_out,
+        }, indent=2, default=str)
+
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool(
+    name="yahoo_get_player_notes",
+    annotations={
+        "title": "Get Player Notes & Injury Status",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def yahoo_get_player_notes(params: GetPlayerNotesInput) -> str:
+    """Fetch recent news, notes, and injury status for a single player.
+
+    Pulls Yahoo's player notes sub-resource plus the status / status_full /
+    injury_note fields on the base player resource. Single player only —
+    batching notes is not supported.
+
+    Args:
+        params (GetPlayerNotesInput): Validated input containing:
+            - player_name (str): Name or player_key.
+
+    Returns:
+        str: JSON object with 'player' (name/team/status/status_full/
+             injury_note), 'notes' (list of {timestamp, note}), and 'count'.
+    """
+    try:
+        sc = _get_oauth_session()
+        lg = _get_league(sc)
+
+        key = _resolve_player_key(lg, params.player_name)
+        if not key:
+            return json.dumps({
+                "error": f"Could not resolve '{params.player_name}' to a player_key.",
+            })
+
+        # Note: Yahoo's Fantasy API does not expose ;out=notes on the player
+        # resource (returns HTTP 400 "Invalid player resource notes requested").
+        # Use the base player resource, which exposes status / status_full /
+        # injury_note directly — the authoritative injury status.
+        base_url = f"https://fantasysports.yahooapis.com/fantasy/v2/player/{key}"
+        try:
+            resp = sc.session.get(base_url, params={"format": "json"})
+        except Exception as e:
+            logger.error(f"Notes fetch failed for {key}: {e}")
+            return _handle_error(e)
+
+        if not resp.ok:
+            return json.dumps({
+                "error": f"Yahoo returned HTTP {resp.status_code} for {key}",
+                "body": resp.text[:500],
+            })
+
+        ctype = resp.headers.get("Content-Type", "")
+        if "json" not in ctype.lower():
+            logger.error(f"Non-JSON response for {key}: ctype={ctype}")
+            return json.dumps({
+                "error": "Yahoo returned non-JSON response (likely XML error or throttle)",
+                "content_type": ctype,
+                "body": resp.text[:500],
+            })
+
+        try:
+            data = resp.json()
+        except ValueError as e:
+            logger.error(f"JSON decode failed for {key}: {e}")
+            return json.dumps({
+                "error": f"Failed to parse Yahoo response as JSON: {e}",
+                "body": resp.text[:500],
+            })
+
+        if not isinstance(data, dict):
+            return json.dumps({
+                "error": "Unexpected Yahoo response shape (not a dict)",
+                "type": type(data).__name__,
+            })
+        fc = data.get("fantasy_content", {}) if isinstance(data, dict) else {}
+        pnode = fc.get("player") if isinstance(fc, dict) else None
+
+        player_info: dict = {"player_key": key}
+
+        # player node is typically a list: [meta_list, ...] where meta_list
+        # contains dicts with fields like name, status, status_full, injury_note.
+        if isinstance(pnode, list):
+            for section in pnode:
+                if isinstance(section, list):
+                    for m in section:
+                        if isinstance(m, dict):
+                            for fld in ("name", "editorial_team_abbr", "status",
+                                         "status_full", "injury_note",
+                                         "on_disabled_list"):
+                                if fld in m:
+                                    player_info[fld] = m[fld]
+                elif isinstance(section, dict):
+                    for fld in ("status", "status_full", "injury_note"):
+                        if fld in section:
+                            player_info[fld] = section[fld]
+
+        return json.dumps({
+            "player": player_info,
+            "status": player_info.get("status"),
+            "status_full": player_info.get("status_full"),
+            "injury_note": player_info.get("injury_note"),
+        }, indent=2, default=str)
+
+    except Exception as e:
+        return _handle_error(e)
 
 # ---------------------------------------------------------------------------
 # Entry point
