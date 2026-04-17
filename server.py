@@ -198,6 +198,42 @@ def _get_player_ownership(sc: OAuth2, league_key: str, player_id) -> dict:
         return {"ownership_error": str(e)}
 
 
+def _resolve_team_key(lg, teams: dict, team_number: Optional[int]) -> Optional[str]:
+    """Resolve a 1-based team_number to a Yahoo team_key.
+
+    Yahoo team_keys are deterministic: ``{league_key}.t.{team_id}``. We
+    construct the key directly from team_number rather than indexing into
+    ``list(lg.teams().keys())`` — the dict ordering returned by
+    ``yahoo_fantasy_api`` is not guaranteed to match 1-based team_ids
+    (this was the root cause of the team_number-ignored bug).
+
+    Args:
+        lg: The yfa.League object (must have ``league_key`` attached by
+            ``_get_league``).
+        teams: The dict returned by ``lg.teams()`` — used only to validate
+            that the resolved key actually exists in this league.
+        team_number: 1-based team number, or None.
+
+    Returns:
+        The team_key string if ``team_number`` is given and valid, or the
+        authenticated user's team_key if ``team_number`` is None. Returns
+        None if the number is out of range (caller should surface an error).
+    """
+    if team_number is not None:
+        candidate = f"{lg.league_key}.t.{team_number}"
+        if candidate in teams:
+            return candidate
+        return None
+
+    # No team_number given: return the authenticated user's team.
+    for tk, tinfo in teams.items():
+        if tinfo.get("is_owned_by_current_login", False):
+            return tk
+    # Fallback: first team in the dict. Shouldn't happen in practice.
+    keys = list(teams.keys())
+    return keys[0] if keys else None
+
+
 def _handle_error(e: Exception) -> str:
     """Consistent error formatting."""
     error_type = type(e).__name__
@@ -439,20 +475,13 @@ async def yahoo_get_roster(params: GetRosterInput) -> str:
         lg = _get_league(sc)
 
         teams = lg.teams()
-        team_keys = list(teams.keys())
 
-        if params.team_number is not None:
-            idx = params.team_number - 1
-            if idx >= len(team_keys):
-                return f"Error: Team number {params.team_number} not found. League has {len(team_keys)} teams."
-            team_key = team_keys[idx]
-        else:
-            # Get the user's own team
-            team_key = team_keys[0]  # Default; will be overridden below
-            for tk, tinfo in teams.items():
-                if tinfo.get("is_owned_by_current_login", False):
-                    team_key = tk
-                    break
+        team_key = _resolve_team_key(lg, teams, params.team_number)
+        if team_key is None:
+            return (
+                f"Error: Team number {params.team_number} not found. "
+                f"League has {len(teams)} teams (valid range: 1-{len(teams)})."
+            )
 
         tm = lg.to_team(team_key)
 
@@ -864,19 +893,13 @@ async def yahoo_get_matchup(params: GetMatchupInput) -> str:
         lg = _get_league(sc)
 
         teams = lg.teams()
-        team_keys = list(teams.keys())
 
-        if params.team_number is not None:
-            idx = params.team_number - 1
-            if idx >= len(team_keys):
-                return f"Error: Team number {params.team_number} not found."
-            team_key = team_keys[idx]
-        else:
-            team_key = team_keys[0]
-            for tk, tinfo in teams.items():
-                if tinfo.get("is_owned_by_current_login", False):
-                    team_key = tk
-                    break
+        team_key = _resolve_team_key(lg, teams, params.team_number)
+        if team_key is None:
+            return (
+                f"Error: Team number {params.team_number} not found. "
+                f"League has {len(teams)} teams."
+            )
 
         tm = lg.to_team(team_key)
 
@@ -985,14 +1008,14 @@ async def yahoo_get_transactions(params: GetTransactionsInput) -> str:
         filter_team_key = None
         if params.team_number is not None:
             teams = lg.teams()
-            team_keys = list(teams.keys())
-            idx = params.team_number - 1
-            if idx >= len(team_keys):
+            filter_team_key = _resolve_team_key(lg, teams, params.team_number)
+            if filter_team_key is None:
                 return json.dumps({
-                    "error": f"Team number {params.team_number} not found. "
-                             f"League has {len(team_keys)} teams.",
+                    "error": (
+                        f"Team number {params.team_number} not found. "
+                        f"League has {len(teams)} teams."
+                    ),
                 })
-            filter_team_key = team_keys[idx]
 
         # Parse each transaction
         transactions = []
@@ -1172,15 +1195,24 @@ async def yahoo_list_teams() -> str:
         teams = lg.teams()
 
         team_list = []
-        for idx, (tk, tinfo) in enumerate(teams.items(), start=1):
+        for tk, tinfo in teams.items():
+            # Parse the real team_id out of the team_key suffix (.t.{N})
+            # rather than using enumerate order, which is not guaranteed
+            # to match Yahoo's 1-based team_ids.
+            try:
+                team_number = int(tk.rsplit(".t.", 1)[-1])
+            except (ValueError, IndexError):
+                team_number = None
             team_list.append({
-                "team_number": idx,
+                "team_number": team_number,
                 "team_key": tk,
                 "name": tinfo.get("name", "Unknown"),
                 "manager": tinfo.get("managers", [{}])[0].get("nickname", "Unknown")
                 if tinfo.get("managers") else "Unknown",
                 "is_your_team": tinfo.get("is_owned_by_current_login", False),
             })
+        # Sort by team_number for a stable, intuitive display order.
+        team_list.sort(key=lambda t: (t["team_number"] is None, t["team_number"]))
 
         return json.dumps({
             "league_id": YAHOO_LEAGUE_ID,
