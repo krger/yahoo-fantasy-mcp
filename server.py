@@ -24,6 +24,7 @@ from datetime import date, datetime
 from contextlib import asynccontextmanager
 from typing import Optional, List
 from enum import Enum
+from urllib.parse import quote
 
 from pydantic import BaseModel, Field, ConfigDict
 from mcp.server.fastmcp import FastMCP
@@ -107,6 +108,205 @@ def _format_player(player: dict) -> dict:
         info["player_id"] = player.get("player_id", "")
         info["percent_owned"] = player.get("percent_owned", "")
     return {k: v for k, v in info.items() if v != "" and v != []}
+
+
+# ---------------------------------------------------------------------------
+# Free-agent search helpers
+# ---------------------------------------------------------------------------
+#
+# The yahoo_fantasy_api library's League.free_agents() method only accepts a
+# 'position' argument — it silently ignores sort and status. To get real
+# sorting we bypass the library and call Yahoo's /players collection endpoint
+# directly. That endpoint accepts a set of semicolon-separated filters:
+#
+#   status=FA|W|A            (free agents, waivers, or all available)
+#   position=SS|OF|C|...
+#   sort=<named>|<stat_id>   (AR/OR/NAME/PTS/O_AR, or a numeric stat ID)
+#   sort_type=season|lastweek|lastmonth|biweekly
+#   sort_season=YYYY         (required with sort_type=season)
+#   count=N                  (Yahoo caps at 25 per page)
+#   start=N                  (pagination offset)
+
+# Stat-name -> Yahoo stat ID. Covers the categories this tool advertises plus
+# a few common extras. Batter K and pitcher K share the abbreviation but
+# different IDs; Yahoo disambiguates by the player's position context.
+_STAT_NAME_TO_ID = {
+    # Hitting
+    "R": "7", "H": "8", "2B": "10", "3B": "11", "HR": "12", "RBI": "13",
+    "SB": "16", "BB": "18", "K": "21", "SO": "21",
+    "AVG": "3", "OBP": "4", "SLG": "5", "OPS": "55", "TB": "23",
+    # Pitching
+    "IP": "50", "W": "28", "L": "29", "SV": "32", "BS": "33", "HLD": "34",
+    "ERA": "26", "WHIP": "27", "K9": "74",
+}
+
+# Sort keys Yahoo accepts verbatim (no translation needed).
+_NAMED_SORTS = {"AR", "OR", "NAME", "PTS", "O_AR"}
+
+
+def _resolve_sort(sort_key: Optional[str]) -> tuple[Optional[str], bool]:
+    """Translate a user-provided sort key to a Yahoo-valid value.
+
+    Returns (yahoo_sort_value, is_stat_id). ``is_stat_id`` is True when the
+    resolved value is a numeric stat ID, which means the caller also needs
+    to include sort_type / sort_season in the request.
+    """
+    if not sort_key:
+        return None, False
+    key = sort_key.strip().upper()
+    if key in _NAMED_SORTS:
+        return key, False
+    if key.isdigit():
+        return key, True
+    if key in _STAT_NAME_TO_ID:
+        return _STAT_NAME_TO_ID[key], True
+    # Unknown key: pass through and let Yahoo decide (it will usually fall
+    # back to AR ordering). Logged so the caller can diagnose.
+    logger.warning(f"Unknown sort key '{sort_key}'; passing to Yahoo as-is")
+    return key, False
+
+
+def _flatten_raw_yahoo_player(player_entry: list) -> dict:
+    """Flatten Yahoo's list-of-dicts player representation into the flat
+    shape that ``_format_player`` expects.
+
+    Yahoo's /players collection returns each player as::
+
+        [
+            [ {"player_key": ...}, {"player_id": ...}, {"name": {...}}, ... ],
+            { "percent_owned": {...}, ... }   # present if requested via ;out=
+        ]
+
+    This walks that structure and emits the same keys that the
+    ``yahoo_fantasy_api`` library produces for ``free_agents()``.
+    """
+    flat: dict = {}
+    if not isinstance(player_entry, list) or not player_entry:
+        return flat
+
+    meta = player_entry[0]
+    if isinstance(meta, list):
+        for item in meta:
+            if not isinstance(item, dict):
+                continue
+            if "name" in item and isinstance(item["name"], dict):
+                flat["name"] = item["name"].get("full", "")
+            if "player_id" in item and "player_id" not in flat:
+                flat["player_id"] = item["player_id"]
+            if "editorial_team_abbr" in item:
+                flat["editorial_team_abbr"] = item["editorial_team_abbr"]
+            if "position_type" in item:
+                flat["position_type"] = item["position_type"]
+            if "status" in item and isinstance(item["status"], str):
+                flat["status"] = item["status"]
+            if "status_full" in item:
+                flat["status_full"] = item["status_full"]
+            if "display_position" in item:
+                flat.setdefault("display_position", item["display_position"])
+            if "eligible_positions" in item:
+                eps = item["eligible_positions"]
+                if isinstance(eps, list):
+                    flat["eligible_positions"] = [
+                        ep.get("position", "")
+                        for ep in eps
+                        if isinstance(ep, dict) and ep.get("position")
+                    ]
+
+    # Sub-resources (percent_owned, ownership, etc.) live in player_entry[1:]
+    for extra in player_entry[1:]:
+        if not isinstance(extra, dict):
+            continue
+        po = extra.get("percent_owned")
+        if isinstance(po, dict) and "value" in po:
+            flat["percent_owned"] = po["value"]
+        elif isinstance(po, list):
+            for sub in po:
+                if isinstance(sub, dict) and "value" in sub:
+                    flat["percent_owned"] = sub["value"]
+                    break
+
+    return flat
+
+
+def _fetch_free_agents_raw(
+    sc: OAuth2,
+    league_key: str,
+    *,
+    status: str = "FA",
+    position: Optional[str] = None,
+    sort: Optional[str] = "AR",
+    count: int = 25,
+) -> list[dict]:
+    """Call Yahoo's /players collection directly and return a list of flat
+    player dicts matching the shape ``_format_player`` consumes.
+
+    Sort, status, and position are all applied server-side by Yahoo.
+    Pagination is handled transparently so counts above Yahoo's 25-per-page
+    cap work as expected.
+    """
+    sort_value, is_stat_id = _resolve_sort(sort)
+
+    # Yahoo's per-page cap is 25. Paginate if the caller asked for more.
+    PAGE = 25
+    requested = max(1, int(count))
+    season = date.today().year
+    filters: list[str] = []
+
+    if status:
+        filters.append(f"status={quote(status, safe='')}")
+    if position:
+        filters.append(f"position={quote(position, safe='')}")
+    if sort_value:
+        filters.append(f"sort={quote(sort_value, safe='')}")
+        if is_stat_id:
+            # Stat-ID sorts need a sort_type; default to season-to-date.
+            filters.append("sort_type=season")
+            filters.append(f"sort_season={season}")
+
+    collected: list[dict] = []
+    start = 0
+    while len(collected) < requested:
+        page_filters = filters + [f"count={PAGE}", f"start={start}"]
+        # Request percent_owned inline so the output matches what the
+        # library's free_agents() used to surface.
+        filter_str = ";".join(page_filters) + ";out=percent_owned"
+        url = (
+            f"https://fantasysports.yahooapis.com/fantasy/v2/"
+            f"league/{league_key}/players;{filter_str}?format=json"
+        )
+
+        resp = sc.session.get(url)
+        if resp.status_code != 200:
+            logger.warning(
+                f"Players collection returned {resp.status_code}: {resp.text[:200]}"
+            )
+            break
+
+        data = resp.json()
+        league_data = data.get("fantasy_content", {}).get("league", [])
+        if not isinstance(league_data, list) or len(league_data) < 2:
+            break
+        players_block = league_data[1].get("players")
+        if not isinstance(players_block, dict):
+            break
+
+        page_players = []
+        for key, entry in players_block.items():
+            if key == "count":
+                continue
+            if isinstance(entry, dict) and "player" in entry:
+                flat = _flatten_raw_yahoo_player(entry["player"])
+                if flat:
+                    page_players.append(flat)
+
+        if not page_players:
+            break
+        collected.extend(page_players)
+        if len(page_players) < PAGE:
+            break  # reached the end of available results
+        start += PAGE
+
+    return collected[:requested]
 
 
 def _get_player_ownership(sc: OAuth2, league_key: str, player_id) -> dict:
@@ -326,8 +526,12 @@ class SearchFreeAgentsInput(BaseModel):
     sort: Optional[str] = Field(
         default="AR",
         description=(
-            "Sort stat key. Common values: AR (overall rank), R, HR, RBI, SB, AVG, "
-            "W, SV, K, ERA, WHIP. Default: AR (overall rank)."
+            "Sort order. Named values Yahoo accepts: AR (actual rank, default), "
+            "OR (overall rank), NAME, PTS, O_AR. Stat abbreviations are "
+            "translated to Yahoo stat IDs server-side — supported: R, H, HR, "
+            "RBI, SB, BB, K, AVG, OBP, SLG, OPS, TB, 2B, 3B (hitting); IP, W, "
+            "L, SV, BS, HLD, ERA, WHIP, K9 (pitching). You may also pass a "
+            "numeric Yahoo stat ID directly (e.g. '7' for Runs)."
         ),
     )
     count: Optional[int] = Field(
@@ -609,47 +813,46 @@ async def yahoo_search_free_agents(params: SearchFreeAgentsInput) -> str:
     """Search for available free agents in the league.
 
     Filter by position and sort by various stat categories to find
-    pickup targets. Returns player name, positions, MLB team, ownership
-    percentage, and key stats.
+    pickup targets. Returns player name, positions, MLB team, and
+    ownership percentage.
 
     Args:
         params (SearchFreeAgentsInput): Validated input containing:
-            - position (Optional[str]): Position filter (C, 1B, 2B, SS, OF, SP, RP, etc.)
-            - sort (Optional[str]): Sort stat key (AR, HR, RBI, AVG, ERA, etc.)
-            - count (Optional[int]): Number of results (default 25)
-            - status (Optional[str]): FA, W, or A (default FA)
+            - position (Optional[str]): Position filter (C, 1B, 2B, 3B, SS,
+              OF, Util, SP, RP). If omitted, returns all positions.
+            - sort (Optional[str]): Sort key. Named values Yahoo accepts
+              verbatim: AR (actual rank, default), OR (overall rank), NAME,
+              PTS, O_AR. Stat abbreviations are translated to Yahoo stat
+              IDs server-side — hitting: R, H, HR, RBI, SB, BB, K, AVG,
+              OBP, SLG, OPS, TB, 2B, 3B; pitching: IP, W, L, SV, BS, HLD,
+              ERA, WHIP, K9. A numeric Yahoo stat ID (e.g. '7' for Runs)
+              may also be passed directly.
+            - count (Optional[int]): Number of results (default 25, max 50).
+              Yahoo caps each request at 25 players, so larger counts
+              paginate automatically.
+            - status (Optional[str]): Availability. FA = free agents only
+              (default), W = waivers only, A = all available (FA + W).
 
     Returns:
-        str: JSON list of available players sorted by the specified stat.
+        str: JSON list of available players sorted by the specified key.
     """
     try:
         sc = _get_oauth_session()
         lg = _get_league(sc)
 
-        kwargs = {}
-        if params.position:
-            kwargs["position"] = params.position
-        if params.sort:
-            kwargs["sort"] = params.sort
-        if params.status and params.status != "FA":
-            kwargs["status"] = params.status
+        # Bypass yahoo_fantasy_api.League.free_agents() — it only accepts
+        # 'position' and silently drops sort/status. Go to the Yahoo
+        # /players collection endpoint directly so all three filters apply
+        # server-side.
+        fa = _fetch_free_agents_raw(
+            sc,
+            lg.league_key,
+            status=params.status or "FA",
+            position=params.position,
+            sort=params.sort or "AR",
+            count=params.count or 25,
+        )
 
-        fa = lg.free_agents(None)  # None = current scoring period
-        # The API may not support all kwargs directly; handle gracefully
-        # Some versions of yahoo_fantasy_api accept position as a filter
-        try:
-            if params.position:
-                fa = lg.free_agents(None, position=params.position)
-        except TypeError:
-            # If the library version doesn't support position kwarg, filter manually
-            if params.position:
-                fa = [
-                    p for p in fa
-                    if params.position in p.get("eligible_positions", [])
-                ]
-
-        # Limit results
-        fa = fa[: params.count]
         formatted = [_format_player(p) for p in fa]
 
         result = {
