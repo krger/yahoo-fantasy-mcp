@@ -1712,5 +1712,22 @@ async def yahoo_get_player_notes(params: GetPlayerNotesInput) -> str:
 # Entry point
 # ---------------------------------------------------------------------------
 
+class RewriteHostMiddleware:
+    """Rewrite the Host header to localhost so the MCP SSE transport
+    accepts requests arriving via Cloudflare Tunnel."""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            scope = dict(scope, headers=[
+                (b"host", b"localhost:8000") if name == b"host" else (name, value)
+                for name, value in scope["headers"]
+            ])
+        await self.app(scope, receive, send)
+
+
 if __name__ == "__main__":
-    mcp.run()
+    import uvicorn
+    app = RewriteHostMiddleware(mcp.streamable_http_app())
+    uvicorn.run(app, host="0.0.0.0", port=8000)
