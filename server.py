@@ -408,6 +408,11 @@ _STAT_ID_TO_NAME = {
     "50": "IP", "60": "H/AB",
 }
 
+# The 10 scored categories in display order, used for season-total ranking in
+# the standings. ERA and WHIP are "lower is better"; all others rank high-first.
+_SCORED_STAT_IDS = ["7", "12", "13", "16", "3", "28", "32", "42", "26", "27"]
+_LOWER_IS_BETTER = {"26", "27"}  # ERA, WHIP
+
 
 def _to_int(value):
     """Coerce a Yahoo stringified count to int, leaving other values as-is."""
@@ -585,21 +590,80 @@ def _parse_scoreboard(raw: dict) -> list:
     return out
 
 
-def _parse_standings(standings: list) -> list:
+def _parse_team_season_stats(raw: dict) -> dict:
+    """Parse a ``league/{key}/teams/stats`` response into
+    ``{team_key: {stat_id: numeric_value}}`` of season totals.
+    """
+    league = raw.get("fantasy_content", {}).get("league", [None, {}])
+    teams = league[1].get("teams", {}) if len(league) > 1 else {}
+    out = {}
+    for key, val in teams.items():
+        if key == "count" or not isinstance(val, dict) or "team" not in val:
+            continue
+        summary = _extract_team_summary(val["team"])
+        out[summary["team_key"]] = {
+            sid: _to_number(v) for sid, v in summary["stats"].items()
+        }
+    return out
+
+
+def _rank_season_categories(stats_by_team: dict) -> dict:
+    """Turn ``{team_key: {stat_id: value}}`` into
+    ``{team_key: [{stat, stat_id, value, rank}]}`` for the scored categories.
+
+    Rank is 1-based standard competition ranking (ties share a rank), with
+    ERA/WHIP ranked low-first and every other category high-first. Teams with
+    a non-numeric value for a category are unranked (``rank: null``).
+    """
+    # Per-category rank lookup: {stat_id: {team_key: rank}}.
+    ranks = {}
+    for sid in _SCORED_STAT_IDS:
+        vals = {
+            tk: s[sid]
+            for tk, s in stats_by_team.items()
+            if isinstance(s.get(sid), (int, float))
+        }
+        lower = sid in _LOWER_IS_BETTER
+        ranks[sid] = {
+            tk: 1 + sum(
+                1 for other in vals.values()
+                if (other < v if lower else other > v)
+            )
+            for tk, v in vals.items()
+        }
+
+    out = {}
+    for tk, s in stats_by_team.items():
+        out[tk] = [
+            {
+                "stat": _STAT_ID_TO_NAME.get(sid, sid),
+                "stat_id": sid,
+                "value": s.get(sid),
+                "rank": ranks[sid].get(tk),
+            }
+            for sid in _SCORED_STAT_IDS
+        ]
+    return out
+
+
+def _parse_standings(standings: list, season_categories: Optional[dict] = None) -> list:
     """Normalize Yahoo's standings list into numeric records.
 
-    The standings feed carries only season records/ranks (no category stats),
-    so this coerces the stringified numbers and structures each team's record.
+    The standings feed carries only season records/ranks, so this coerces the
+    stringified numbers and structures each team's record. When
+    ``season_categories`` (``{team_key: [category...]}``) is supplied, each
+    team's season category totals are merged in under ``categories``.
     """
     out = []
     for entry in standings:
         totals = entry.get("outcome_totals", {})
         gb = entry.get("games_back")
-        out.append({
+        team_key = entry.get("team_key")
+        row = {
             "rank": _to_number(entry.get("rank")),
             "playoff_seed": _to_number(entry.get("playoff_seed")),
             "name": entry.get("name"),
-            "team_key": entry.get("team_key"),
+            "team_key": team_key,
             "record": {
                 "wins": _to_number(totals.get("wins")),
                 "losses": _to_number(totals.get("losses")),
@@ -607,7 +671,10 @@ def _parse_standings(standings: list) -> list:
                 "pct": _to_number(totals.get("percentage")),
             },
             "games_back": None if gb in ("-", "", None) else _to_number(gb),
-        })
+        }
+        if season_categories is not None:
+            row["categories"] = season_categories.get(team_key, [])
+        out.append(row)
     return out
 
 
@@ -949,8 +1016,10 @@ async def yahoo_get_standings() -> str:
     """Get current league standings including win-loss records and rankings.
 
     Returns all teams ranked by their current standing, each with a numeric
-    ``record`` (wins/losses/ties/pct), rank, playoff seed, and games_back.
-    The standings feed carries no per-category stats, so none are included.
+    ``record`` (wins/losses/ties/pct), rank, playoff seed, games_back, and a
+    ``categories`` list of season totals per scoring category with a league
+    ``rank`` (ERA/WHIP ranked low-first). Category totals come from a separate
+    Yahoo call; if it fails, standings still return without ``categories``.
 
     Returns:
         str: JSON array of teams sorted by standing.
@@ -960,10 +1029,21 @@ async def yahoo_get_standings() -> str:
         lg = _get_league(sc)
         standings = lg.standings()
 
+        # Season category totals come from a separate teams/stats call; degrade
+        # gracefully to records-only if it fails rather than dropping standings.
+        season_categories = None
+        try:
+            raw_stats = lg.yhandler.get(f"league/{lg.league_key}/teams/stats")
+            season_categories = _rank_season_categories(
+                _parse_team_season_stats(raw_stats)
+            )
+        except Exception as e:
+            logger.warning(f"Could not fetch season category totals: {e}")
+
         result = {
             "league_id": YAHOO_LEAGUE_ID,
             "team_count": len(standings),
-            "standings": _parse_standings(standings),
+            "standings": _parse_standings(standings, season_categories),
         }
         return json.dumps(result, indent=2, default=str)
 
