@@ -416,6 +416,20 @@ def _to_int(value):
     return value
 
 
+def _to_number(value):
+    """Coerce a Yahoo stringified number (int or float, e.g. ``".583"``) to a
+    number, leaving non-numeric values as-is."""
+    if isinstance(value, str):
+        s = value.strip()
+        if s.lstrip("-").isdigit():
+            return int(s)
+        try:
+            return float(s)
+        except ValueError:
+            return value
+    return value
+
+
 def _extract_team_summary(team_node: list) -> dict:
     """Pull team_key, name, stats-by-stat_id, and category points out of one
     team entry inside a matchup's ``teams`` collection.
@@ -568,6 +582,32 @@ def _parse_scoreboard(raw: dict) -> list:
         if key == "count" or not isinstance(val, dict) or "matchup" not in val:
             continue
         out.append(_parse_matchup_node(val["matchup"]))
+    return out
+
+
+def _parse_standings(standings: list) -> list:
+    """Normalize Yahoo's standings list into numeric records.
+
+    The standings feed carries only season records/ranks (no category stats),
+    so this coerces the stringified numbers and structures each team's record.
+    """
+    out = []
+    for entry in standings:
+        totals = entry.get("outcome_totals", {})
+        gb = entry.get("games_back")
+        out.append({
+            "rank": _to_number(entry.get("rank")),
+            "playoff_seed": _to_number(entry.get("playoff_seed")),
+            "name": entry.get("name"),
+            "team_key": entry.get("team_key"),
+            "record": {
+                "wins": _to_number(totals.get("wins")),
+                "losses": _to_number(totals.get("losses")),
+                "ties": _to_number(totals.get("ties")),
+                "pct": _to_number(totals.get("percentage")),
+            },
+            "games_back": None if gb in ("-", "", None) else _to_number(gb),
+        })
     return out
 
 
@@ -908,8 +948,9 @@ async def yahoo_get_roster(params: GetRosterInput) -> str:
 async def yahoo_get_standings() -> str:
     """Get current league standings including win-loss records and rankings.
 
-    Returns all teams ranked by their current standing with W/L/T records
-    and category stats if available.
+    Returns all teams ranked by their current standing, each with a numeric
+    ``record`` (wins/losses/ties/pct), rank, playoff seed, and games_back.
+    The standings feed carries no per-category stats, so none are included.
 
     Returns:
         str: JSON array of teams sorted by standing.
@@ -922,7 +963,7 @@ async def yahoo_get_standings() -> str:
         result = {
             "league_id": YAHOO_LEAGUE_ID,
             "team_count": len(standings),
-            "standings": standings,
+            "standings": _parse_standings(standings),
         }
         return json.dumps(result, indent=2, default=str)
 
