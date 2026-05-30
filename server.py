@@ -830,7 +830,10 @@ class SearchFreeAgentsInput(BaseModel):
             "translated to Yahoo stat IDs server-side — supported: R, H, HR, "
             "RBI, SB, BB, K, AVG, OBP, SLG, OPS, TB, 2B, 3B (hitting); IP, W, "
             "L, SV, BS, HLD, ERA, WHIP, K9 (pitching). You may also pass a "
-            "numeric Yahoo stat ID directly (e.g. '7' for Runs)."
+            "numeric Yahoo stat ID directly (e.g. '7' for Runs). "
+            "Note: PTS (fantasy points) returns no results in this "
+            "head-to-head categories league — Yahoo computes no points "
+            "ranking here; use a category like AR or a stat sort instead."
         ),
     )
     count: Optional[int] = Field(
@@ -1138,7 +1141,9 @@ async def yahoo_search_free_agents(params: SearchFreeAgentsInput) -> str:
               IDs server-side — hitting: R, H, HR, RBI, SB, BB, K, AVG,
               OBP, SLG, OPS, TB, 2B, 3B; pitching: IP, W, L, SV, BS, HLD,
               ERA, WHIP, K9. A numeric Yahoo stat ID (e.g. '7' for Runs)
-              may also be passed directly.
+              may also be passed directly. Note: PTS returns no results in
+              this categories league (Yahoo has no fantasy-points ranking
+              here) — sort by AR or a stat instead.
             - count (Optional[int]): Number of results (default 25, max 50).
               Yahoo caps each request at 25 players, so larger counts
               paginate automatically.
