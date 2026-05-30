@@ -398,6 +398,134 @@ def _get_player_ownership(sc: OAuth2, league_key: str, player_id) -> dict:
         return {"ownership_error": str(e)}
 
 
+# Yahoo stat_id -> display label for the league's scored + informational
+# matchup categories. Matchup responses key stats by numeric stat_id (see
+# "Yahoo API gotchas"); note the pitching K here is stat_id 42, distinct from
+# the batting K (21) in _STAT_NAME_TO_ID above.
+_STAT_ID_TO_NAME = {
+    "7": "R", "12": "HR", "13": "RBI", "16": "SB", "3": "AVG",
+    "28": "W", "32": "SV", "42": "K", "26": "ERA", "27": "WHIP",
+    "50": "IP", "60": "H/AB",
+}
+
+
+def _to_int(value):
+    """Coerce a Yahoo stringified count to int, leaving other values as-is."""
+    if isinstance(value, str) and value.lstrip("-").isdigit():
+        return int(value)
+    return value
+
+
+def _extract_team_summary(team_node: list) -> dict:
+    """Pull team_key, name, stats-by-stat_id, and category points out of one
+    team entry inside a matchup's ``teams`` collection.
+
+    Yahoo represents each team as ``[[meta...], {team_stats, team_points, ...}]``
+    where meta is a positional list of single-key dicts (locate fields by key,
+    never by index).
+    """
+    info = {}
+    for d in team_node[0]:
+        if isinstance(d, dict):
+            info.update(d)
+
+    stats = {}
+    points = None
+    for part in team_node[1:]:
+        if not isinstance(part, dict):
+            continue
+        if "team_stats" in part:
+            for s in part["team_stats"].get("stats", []):
+                st = s.get("stat", {})
+                if "stat_id" in st:
+                    stats[str(st["stat_id"])] = st.get("value")
+        if "team_points" in part:
+            points = part["team_points"].get("total")
+
+    return {
+        "team_key": info.get("team_key"),
+        "name": info.get("name", "Unknown"),
+        "stats": stats,
+        "category_points": points,
+    }
+
+
+def _parse_matchup(raw: dict, my_team_key: str) -> dict:
+    """Turn Yahoo's raw matchup response into a category-by-category breakdown
+    between the requesting team and its opponent.
+
+    Yahoo only returns the opponent's team_key from ``Team.matchup()``; the
+    full stat breakdown lives in the raw response, so we parse it here.
+    """
+    matchup = (
+        raw.get("fantasy_content", {})
+        .get("team", [None, {}])[1]
+        .get("matchups", {})
+        .get("0", {})
+        .get("matchup", {})
+    )
+    if not matchup:
+        raise ValueError("Matchup data not found in Yahoo response")
+
+    # Winner of each scored category, keyed by stat_id ("tie" when tied).
+    winners = {}
+    for entry in matchup.get("stat_winners", []):
+        sw = entry.get("stat_winner", {})
+        sid = str(sw.get("stat_id"))
+        winners[sid] = "tie" if sw.get("is_tied") else sw.get("winner_team_key")
+
+    teams_coll = matchup.get("0", {}).get("teams", {})
+    summaries = []
+    for key, val in teams_coll.items():
+        if key == "count" or not isinstance(val, dict) or "team" not in val:
+            continue
+        summaries.append(_extract_team_summary(val["team"]))
+
+    me = next((s for s in summaries if s["team_key"] == my_team_key), None)
+    opp = next((s for s in summaries if s["team_key"] != my_team_key), None)
+    if me is None or opp is None:
+        raise ValueError("Could not resolve both teams in matchup")
+
+    categories = []
+    for sid, value in me["stats"].items():
+        winner_key = winners.get(sid)
+        if winner_key == "tie":
+            result = "tie"
+        elif winner_key == my_team_key:
+            result = "win"
+        elif winner_key == opp["team_key"]:
+            result = "loss"
+        else:
+            result = None  # informational category (not scored)
+        categories.append({
+            "stat": _STAT_ID_TO_NAME.get(sid, sid),
+            "stat_id": sid,
+            "team": value,
+            "opponent": opp["stats"].get(sid),
+            "scored": sid in winners,
+            "result": result,
+        })
+
+    return {
+        "week": _to_int(matchup.get("week")),
+        "week_start": matchup.get("week_start"),
+        "week_end": matchup.get("week_end"),
+        "status": matchup.get("status"),
+        "is_playoffs": matchup.get("is_playoffs") == "1",
+        "team": {
+            "team_key": me["team_key"],
+            "name": me["name"],
+            "category_points": _to_int(me["category_points"]),
+        },
+        "opponent": {
+            "team_key": opp["team_key"],
+            "name": opp["name"],
+            "category_points": _to_int(opp["category_points"]),
+        },
+        "categories": categories,
+    }
+
+
 def _resolve_team_key(lg, teams: dict, team_number: Optional[int]) -> Optional[str]:
     """Resolve a 1-based team_number to a Yahoo team_key.
 
@@ -1107,9 +1235,11 @@ async def yahoo_get_matchup(params: GetMatchupInput) -> str:
         tm = lg.to_team(team_key)
 
         # Team.matchup() requires an explicit week; default to the league's
-        # current week when the caller omits one.
+        # current week when the caller omits one. It only returns the
+        # opponent's key, so parse the raw response for the full breakdown.
         week = params.week if params.week is not None else lg.current_week()
-        matchup = tm.matchup(week=week)
+        raw = tm.yhandler.get_matchup_raw(team_key, week)
+        matchup = _parse_matchup(raw, team_key)
 
         team_name = teams[team_key].get("name", "Unknown")
 
