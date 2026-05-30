@@ -34,14 +34,28 @@ This launches the streamable-HTTP server (uvicorn) on `0.0.0.0:8000`, serving MC
 
 ## Testing / verifying changes
 
-There is no substitute for exercising the actual tools against the live league. After any change:
+**Automated unit tests** cover the parsers — the repo's main source of bugs.
+They run offline against faithful fixtures (no network, no credentials):
+
+```
+uv run pytest          # or: .venv/bin/python -m pytest
+```
+
+`tests/fixtures.py` holds minimal Yahoo responses reproducing the positional
+quirks; `tests/test_parsers.py` covers `_to_int`/`_to_number`,
+`_extract_team_summary`, `_parse_matchup_node` (both framings),
+`_parse_matchup`, `_parse_scoreboard`, `_parse_team_season_stats`,
+`_rank_season_categories` (ranking direction + ties), `_parse_standings`,
+`_flatten_raw_yahoo_player`, and `_resolve_team_key`. **Add a case here when
+you touch a parser** — especially new stat_ids or response shapes.
+
+Automated tests don't hit Yahoo, so there's still no substitute for exercising
+the actual tools against the live league for anything API-facing. After a
+change:
 
 1. Start the server locally.
 2. Call the affected tool(s) and confirm the JSON shape is intact and values are correct.
 3. For anything touching rosters or matchups, verify against the Yahoo web UI for league 60467.
-
-<!-- TODO: if/when a test suite exists, document the command here, e.g. `pytest`. -->
-TODO: add automated tests and document the command. High-value targets: the Yahoo response parsers (see "Yahoo API gotchas") and team-number resolution.
 
 ## Deployment (pull-on-Librarian)
 
