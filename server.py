@@ -1106,17 +1106,17 @@ async def yahoo_get_matchup(params: GetMatchupInput) -> str:
 
         tm = lg.to_team(team_key)
 
-        if params.week:
-            matchup = tm.matchup(week=params.week)
-        else:
-            matchup = tm.matchup()
+        # Team.matchup() requires an explicit week; default to the league's
+        # current week when the caller omits one.
+        week = params.week if params.week is not None else lg.current_week()
+        matchup = tm.matchup(week=week)
 
         team_name = teams[team_key].get("name", "Unknown")
 
         result = {
             "team_name": team_name,
             "team_key": team_key,
-            "week": params.week or "current",
+            "week": week,
             "matchup": matchup,
         }
         return json.dumps(result, indent=2, default=str)
