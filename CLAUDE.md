@@ -87,7 +87,7 @@ Keep tool names and input schemas stable — they are the server's public contra
 - `yahoo_get_roster` — a team's roster (supports `day` / `week`)
 - `yahoo_get_league_settings` — config, rules, scoring
 - `yahoo_get_transactions` — recent transaction history
-- `yahoo_search_free_agents` — available free agents
+- `yahoo_search_free_agents` — available free agents. Each player includes a `stats` map of season totals per scoring category (labeled via `_STAT_ID_TO_NAME`, numbers coerced; H/AB kept as a ratio string), fetched inline via `;out=percent_owned,stats` and parsed in `_flatten_raw_yahoo_player`. Hitters get R/HR/RBI/SB/AVG, pitchers W/SV/K/ERA/WHIP.
 - `yahoo_get_player_stats` — single player lookup
 - `yahoo_get_players_batch` — multiple players in one call
 - `yahoo_get_player_notes` — news / injury notes
