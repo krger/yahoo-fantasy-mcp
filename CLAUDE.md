@@ -17,20 +17,20 @@ This is a **Model Context Protocol (MCP) server** that exposes Yahoo Fantasy Bas
 
 ## Key files
 
-<!-- TODO: fill in the real layout. As of now the bulk of logic lives in server.py. -->
 - `server.py` — main server: MCP tool definitions and Yahoo API client logic.
-- TODO: list any other modules (auth/token handling, Yahoo response parsing helpers, config).
-- TODO: where the Yahoo OAuth token/refresh token is stored and how it's loaded (env var, file, etc.). **Never commit tokens or secrets.**
+- `server.py` is currently the **only** module — tool definitions, the Yahoo client, OAuth/token handling, and all response-parsing helpers (`_format_player`, `_flatten_raw_yahoo_player`, `_resolve_team_key`, etc.) live in it.
+- **Yahoo OAuth credentials** load from `oauth2.json` in the repo root (override the path with the `YAHOO_OAUTH_FILE` env var). The file holds the `consumer_key`/`consumer_secret` plus the access + refresh tokens; `yahoo_oauth.OAuth2` refreshes the access token automatically when expired (`_get_oauth_session`). It is **gitignored and must never be committed.** Other config comes from env vars with defaults: `YAHOO_LEAGUE_ID` (default `60467`), `YAHOO_SPORT` (default `mlb`).
 
 ## Running locally (dev machine, not Librarian)
 
 Develop on a workstation, never directly against the live deployed copy. The live runtime updates via `git pull` on Librarian (see Deployment).
 
 ```
-# TODO: confirm the exact run command, e.g.
+# from the repo root, with oauth2.json present
 python server.py
-# or however the streamable-HTTP server is launched, plus any required env vars
 ```
+
+This launches the streamable-HTTP server (uvicorn) on `0.0.0.0:8000`, serving MCP at `/mcp`. On Librarian the same command runs under systemd via the repo's venv (`venv/bin/python server.py`). No env vars are required for the default league (60467); set `YAHOO_OAUTH_FILE`, `YAHOO_LEAGUE_ID`, or `YAHOO_SPORT` to override.
 
 ## Testing / verifying changes
 
@@ -51,11 +51,14 @@ Deploys are manual and intentional — no GitHub Actions, no CI bot.
 # on your dev machine
 git add -p && git commit && git push
 
-# on Librarian
-git pull
-# TODO: restart the service, e.g.
-# sudo systemctl restart <service-name>
+# on Librarian (repo lives at /home/krg/yahoo-fantasy-mcp, runs as user krg)
+cd /home/krg/yahoo-fantasy-mcp
+git pull --ff-only
+sudo systemctl restart yahoo-fantasy-mcp.service
+systemctl is-active yahoo-fantasy-mcp.service   # expect: active
 ```
+
+The server is a systemd unit, `yahoo-fantasy-mcp.service` (enabled, `ExecStart=.../venv/bin/python server.py`). The public endpoint is fronted by `cloudflared-tunnel.service` (the Cloudflare Tunnel); leave that one alone. Check logs with `journalctl -u yahoo-fantasy-mcp.service -n 50`.
 
 Before starting an editing session, make sure Librarian and the repo are in sync (`git fetch && git status` on Librarian) so you're editing from the same baseline that's actually running. Hand-edits made on Librarian without committing will show as uncommitted changes — resolve those first.
 
