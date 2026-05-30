@@ -1,5 +1,7 @@
 # Yahoo Fantasy Baseball MCP Server
 
+[![tests](https://github.com/krger/yahoo-fantasy-mcp/actions/workflows/test.yml/badge.svg)](https://github.com/krger/yahoo-fantasy-mcp/actions/workflows/test.yml)
+
 A read-only MCP server that lets Claude Desktop access your Yahoo Fantasy Baseball league data.
 
 ## Tools
