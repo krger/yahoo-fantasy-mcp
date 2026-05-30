@@ -104,6 +104,7 @@ The Yahoo Fantasy API response format is the main source of bugs in this repo. B
 ## Known issues / fragile areas
 
 - Historically regression-prone handlers (verify these still work after changes): transactions handler, free-agent search **sort** parameter, player-notes endpoint, and **roster team-number resolution**.
+- **`yahoo_search_free_agents` with `sort=PTS` returns zero results** — this is a head-to-head **categories** league, so Yahoo computes no fantasy-points ranking. Expected behavior, not a bug; the tool description documents it and steers callers to AR or a stat/category sort. Don't "fix" it.
 
 ## Conventions & etiquette
 
