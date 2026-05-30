@@ -17,6 +17,12 @@ This is a **Model Context Protocol (MCP) server** that exposes Yahoo Fantasy Bas
 
 ## Key files
 
+The codebase is split across three modules along stable seams — this
+modularization is **complete**; respect these boundaries rather than
+re-consolidating into one file or splitting further without a clear reason.
+Keep each module's concern intact: parsers stay pure (no network/OAuth/MCP),
+schemas stay declarative, and the Yahoo client + tool wiring stay in `server.py`.
+
 - `server.py` — main server and entrypoint: MCP tool definitions, the Yahoo client, OAuth/token handling, free-agent request-building (`_resolve_sort`, `_fetch_free_agents_raw`), `_format_player`, and the `_handle_error` formatter.
 - `yahoo_parsers.py` — the pure Yahoo response parsers/normalizers (no network, no OAuth, no MCP): the `stat_id` constants plus `_to_int`/`_to_number`, `_flatten_raw_yahoo_player`, `_extract_team_summary`, `_parse_matchup_node`, `_parse_matchup`, `_parse_scoreboard`, `_parse_team_season_stats`, `_rank_season_categories`, `_parse_standings`, and `_resolve_team_key`. This is the unit-test target (the repo's main source of bugs); `server.py` imports from it.
 - `schemas.py` — the Pydantic input models (`GetRosterInput`, `SearchFreeAgentsInput`, `GetMatchupInput`, the `TransactionType` enum, etc.): the MCP tools' input contract. FastMCP turns these into the JSON schema advertised to clients, so class/field names are part of the public contract — renaming is a breaking change. `server.py` imports the models it annotates handlers with.
