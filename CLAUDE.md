@@ -59,7 +59,9 @@ change:
 
 ## Deployment (pull-on-Librarian)
 
-Deploys are manual and intentional — no GitHub Actions, no CI bot.
+Deploys are manual and intentional. CI (`.github/workflows/test.yml`) runs the
+pytest suite on every push to `main` and on PRs, but it **only runs tests — it
+never deploys**. Deployment is always a hand `git pull` on Librarian.
 
 ```
 # on your dev machine
