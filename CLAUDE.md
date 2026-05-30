@@ -68,7 +68,10 @@ never deploys**. Deployment is always a hand `git pull` on the deploy host.
 # on your dev machine
 git add -p && git commit && git push
 
-# on the deploy host (repo lives at /srv/yahoo-fantasy-mcp, runs as user krg)
+# on the deploy host (repo lives at /srv/yahoo-fantasy-mcp, runs as user krg).
+# Connect with the `deploy-host` SSH host alias (in ~/.ssh/config); systemctl
+# works without a sudo password prompt.
+ssh deploy-host
 cd /srv/yahoo-fantasy-mcp
 git pull --ff-only
 sudo systemctl restart yahoo-fantasy-mcp.service
