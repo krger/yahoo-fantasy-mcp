@@ -450,23 +450,18 @@ def _extract_team_summary(team_node: list) -> dict:
     }
 
 
-def _parse_matchup(raw: dict, my_team_key: str) -> dict:
-    """Turn Yahoo's raw matchup response into a category-by-category breakdown
-    between the requesting team and its opponent.
+def _parse_matchup_node(matchup: dict, perspective_team_key: Optional[str] = None) -> dict:
+    """Parse one Yahoo matchup node into a category-by-category breakdown.
 
-    Yahoo only returns the opponent's team_key from ``Team.matchup()``; the
-    full stat breakdown lives in the raw response, so we parse it here.
+    Both the team matchup endpoint and the league scoreboard wrap the same
+    node shape (``week``/``stat_winners``/``0.teams``), so this is the shared
+    core for ``_parse_matchup`` and ``_parse_scoreboard``.
+
+    With ``perspective_team_key`` set, the result is framed as ``team`` vs
+    ``opponent`` with a ``result`` (win/loss/tie) per category. Without it, the
+    framing is neutral: a ``teams`` list and per-category ``values`` keyed by
+    team_key plus the winning team_key.
     """
-    matchup = (
-        raw.get("fantasy_content", {})
-        .get("team", [None, {}])[1]
-        .get("matchups", {})
-        .get("0", {})
-        .get("matchup", {})
-    )
-    if not matchup:
-        raise ValueError("Matchup data not found in Yahoo response")
-
     # Winner of each scored category, keyed by stat_id ("tie" when tied).
     winners = {}
     for entry in matchup.get("stat_winners", []):
@@ -481,49 +476,99 @@ def _parse_matchup(raw: dict, my_team_key: str) -> dict:
             continue
         summaries.append(_extract_team_summary(val["team"]))
 
-    me = next((s for s in summaries if s["team_key"] == my_team_key), None)
-    opp = next((s for s in summaries if s["team_key"] != my_team_key), None)
-    if me is None or opp is None:
-        raise ValueError("Could not resolve both teams in matchup")
-
-    categories = []
-    for sid, value in me["stats"].items():
-        winner_key = winners.get(sid)
-        if winner_key == "tie":
-            result = "tie"
-        elif winner_key == my_team_key:
-            result = "win"
-        elif winner_key == opp["team_key"]:
-            result = "loss"
-        else:
-            result = None  # informational category (not scored)
-        categories.append({
-            "stat": _STAT_ID_TO_NAME.get(sid, sid),
-            "stat_id": sid,
-            "team": value,
-            "opponent": opp["stats"].get(sid),
-            "scored": sid in winners,
-            "result": result,
-        })
-
-    return {
+    meta = {
         "week": _to_int(matchup.get("week")),
         "week_start": matchup.get("week_start"),
         "week_end": matchup.get("week_end"),
         "status": matchup.get("status"),
         "is_playoffs": matchup.get("is_playoffs") == "1",
-        "team": {
-            "team_key": me["team_key"],
-            "name": me["name"],
-            "category_points": _to_int(me["category_points"]),
-        },
-        "opponent": {
-            "team_key": opp["team_key"],
-            "name": opp["name"],
-            "category_points": _to_int(opp["category_points"]),
-        },
-        "categories": categories,
     }
+
+    def _team_info(s):
+        return {
+            "team_key": s["team_key"],
+            "name": s["name"],
+            "category_points": _to_int(s["category_points"]),
+        }
+
+    if perspective_team_key is not None:
+        me = next((s for s in summaries if s["team_key"] == perspective_team_key), None)
+        opp = next((s for s in summaries if s["team_key"] != perspective_team_key), None)
+        if me is None or opp is None:
+            raise ValueError("Could not resolve both teams in matchup")
+
+        categories = []
+        for sid, value in me["stats"].items():
+            winner_key = winners.get(sid)
+            if winner_key == "tie":
+                result = "tie"
+            elif winner_key == me["team_key"]:
+                result = "win"
+            elif winner_key == opp["team_key"]:
+                result = "loss"
+            else:
+                result = None  # informational category (not scored)
+            categories.append({
+                "stat": _STAT_ID_TO_NAME.get(sid, sid),
+                "stat_id": sid,
+                "team": value,
+                "opponent": opp["stats"].get(sid),
+                "scored": sid in winners,
+                "result": result,
+            })
+        return {**meta, "team": _team_info(me), "opponent": _team_info(opp),
+                "categories": categories}
+
+    # Neutral framing for the scoreboard (no single perspective team).
+    if len(summaries) < 2:
+        raise ValueError("Matchup is missing one or both teams")
+    a, b = summaries[0], summaries[1]
+    categories = []
+    for sid in a["stats"]:
+        categories.append({
+            "stat": _STAT_ID_TO_NAME.get(sid, sid),
+            "stat_id": sid,
+            "values": {
+                a["team_key"]: a["stats"].get(sid),
+                b["team_key"]: b["stats"].get(sid),
+            },
+            "winner": winners.get(sid),  # team_key, "tie", or None (info stat)
+            "scored": sid in winners,
+        })
+    return {**meta, "teams": [_team_info(a), _team_info(b)], "categories": categories}
+
+
+def _parse_matchup(raw: dict, my_team_key: str) -> dict:
+    """Turn Yahoo's raw team-matchup response into a team-vs-opponent breakdown.
+
+    Yahoo only returns the opponent's team_key from ``Team.matchup()``; the
+    full stat breakdown lives in the raw response, so we parse it here.
+    """
+    matchup = (
+        raw.get("fantasy_content", {})
+        .get("team", [None, {}])[1]
+        .get("matchups", {})
+        .get("0", {})
+        .get("matchup", {})
+    )
+    if not matchup:
+        raise ValueError("Matchup data not found in Yahoo response")
+    return _parse_matchup_node(matchup, my_team_key)
+
+
+def _parse_scoreboard(raw: dict) -> list:
+    """Turn Yahoo's raw scoreboard response into a list of neutral matchup
+    breakdowns, one per head-to-head pairing for the week.
+    """
+    league = raw.get("fantasy_content", {}).get("league", [None, {}])
+    scoreboard = league[1].get("scoreboard", {}) if len(league) > 1 else {}
+    matchups = scoreboard.get("0", {}).get("matchups", {})
+    out = []
+    for key, val in matchups.items():
+        if key == "count" or not isinstance(val, dict) or "matchup" not in val:
+            continue
+        out.append(_parse_matchup_node(val["matchup"]))
+    return out
 
 
 def _resolve_team_key(lg, teams: dict, team_number: Optional[int]) -> Optional[str]:
@@ -911,15 +956,13 @@ async def yahoo_get_scoreboard(params: GetScoreboardInput) -> str:
         sc = _get_oauth_session()
         lg = _get_league(sc)
 
-        if params.week:
-            scoreboard = lg.matchups(week=params.week)
-        else:
-            scoreboard = lg.matchups()
+        week = params.week if params.week is not None else lg.current_week()
+        scoreboard = lg.matchups(week=week)
 
         result = {
             "league_id": YAHOO_LEAGUE_ID,
-            "week": params.week or "current",
-            "matchups": scoreboard,
+            "week": week,
+            "matchups": _parse_scoreboard(scoreboard),
         }
         return json.dumps(result, indent=2, default=str)
 

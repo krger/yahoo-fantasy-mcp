@@ -82,7 +82,7 @@ Keep tool names and input schemas stable — they are the server's public contra
 
 - `yahoo_list_teams` — list all teams (numbers, keys, managers)
 - `yahoo_get_standings` — league standings
-- `yahoo_get_scoreboard` — all matchups for a week
+- `yahoo_get_scoreboard` — all matchups for a week. Returns `matchups` as a list of parsed breakdowns (same core parser as `yahoo_get_matchup`, neutral framing): each has matchup meta, a `teams` list (`name`, `team_key`, `category_points`), and a `categories` list where each entry carries per-stat `values` keyed by `team_key`, the winning `team_key` (or `"tie"`/`null` for informational stats), and a `scored` flag. `week` is resolved to the numeric current week when omitted.
 - `yahoo_get_matchup` — one team's H2H matchup detail. Returns a structured `matchup` object (not just the opponent key): matchup meta (`week`, `week_start`/`week_end`, `status`, `is_playoffs`), both teams (`team`/`opponent` with `name`, `team_key`, `category_points`), and a `categories` list giving each side's value per stat plus `result` (`win`/`loss`/`tie`, from Yahoo's `stat_winner`) and a `scored` flag (informational stats like H/AB and IP are `scored: false`). Parsed by `_parse_matchup` from the raw response, since yfa's `Team.matchup()` only yields the opponent's key.
 - `yahoo_get_roster` — a team's roster (supports `day` / `week`)
 - `yahoo_get_league_settings` — config, rules, scoring
