@@ -107,7 +107,13 @@ def _format_player(player: dict) -> dict:
         info["editorial_team_abbr"] = player.get("editorial_team_abbr", "")
         info["player_id"] = player.get("player_id", "")
         info["percent_owned"] = player.get("percent_owned", "")
-    return {k: v for k, v in info.items() if v != "" and v != []}
+    out = {k: v for k, v in info.items() if v != "" and v != []}
+    # Per-category stats are present for free agents (fetched with ;out=stats);
+    # roster/other callers won't have them, so only surface when non-empty.
+    stats = player.get("stats") if isinstance(player, dict) else None
+    if stats:
+        out["stats"] = stats
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +218,7 @@ def _flatten_raw_yahoo_player(player_entry: list) -> dict:
                         if isinstance(ep, dict) and ep.get("position")
                     ]
 
-    # Sub-resources (percent_owned, ownership, etc.) live in player_entry[1:]
+    # Sub-resources (percent_owned, player_stats, etc.) live in player_entry[1:]
     for extra in player_entry[1:]:
         if not isinstance(extra, dict):
             continue
@@ -224,6 +230,19 @@ def _flatten_raw_yahoo_player(player_entry: list) -> dict:
                 if isinstance(sub, dict) and "value" in sub:
                     flat["percent_owned"] = sub["value"]
                     break
+
+        ps = extra.get("player_stats")
+        if isinstance(ps, dict):
+            stats = {}
+            for s in ps.get("stats", []):
+                st = s.get("stat", {}) if isinstance(s, dict) else {}
+                sid = st.get("stat_id")
+                if sid is not None:
+                    stats[_STAT_ID_TO_NAME.get(str(sid), str(sid))] = _to_number(
+                        st.get("value")
+                    )
+            if stats:
+                flat["stats"] = stats
 
     return flat
 
@@ -267,9 +286,9 @@ def _fetch_free_agents_raw(
     start = 0
     while len(collected) < requested:
         page_filters = filters + [f"count={PAGE}", f"start={start}"]
-        # Request percent_owned inline so the output matches what the
-        # library's free_agents() used to surface.
-        filter_str = ";".join(page_filters) + ";out=percent_owned"
+        # Request percent_owned + season stats inline so each player carries
+        # ownership and per-category values without a follow-up call.
+        filter_str = ";".join(page_filters) + ";out=percent_owned,stats"
         url = (
             f"https://fantasysports.yahooapis.com/fantasy/v2/"
             f"league/{league_key}/players;{filter_str}?format=json"
@@ -1105,8 +1124,9 @@ async def yahoo_search_free_agents(params: SearchFreeAgentsInput) -> str:
     """Search for available free agents in the league.
 
     Filter by position and sort by various stat categories to find
-    pickup targets. Returns player name, positions, MLB team, and
-    ownership percentage.
+    pickup targets. Returns player name, positions, MLB team, ownership
+    percentage, and a ``stats`` map of the player's season totals per
+    scoring category (hitters get R/HR/RBI/SB/AVG, pitchers W/SV/K/ERA/WHIP).
 
     Args:
         params (SearchFreeAgentsInput): Validated input containing:
