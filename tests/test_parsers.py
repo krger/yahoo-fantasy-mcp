@@ -1,4 +1,4 @@
-"""Unit tests for the Yahoo response parsers in server.py.
+"""Unit tests for the Yahoo response parsers in yahoo_parsers.py.
 
 These exercise the pure parsing/normalization helpers against faithful
 fixtures (no network, no credentials). The parsers are the repo's main source
@@ -7,34 +7,34 @@ stat_id mapping, win/loss/tie resolution, rate-stat ranking direction, and
 numeric coercion.
 """
 
-import server
+import yahoo_parsers as parsers
 from tests import fixtures as fx
 
 
 # --- numeric coercion ------------------------------------------------------
 
 def test_to_int_coerces_only_integers():
-    assert server._to_int("25") == 25
-    assert server._to_int("-3") == -3
-    assert server._to_int(".583") == ".583"   # not an int -> unchanged
-    assert server._to_int("3.5") == "3.5"
-    assert server._to_int(7) == 7
+    assert parsers._to_int("25") == 25
+    assert parsers._to_int("-3") == -3
+    assert parsers._to_int(".583") == ".583"   # not an int -> unchanged
+    assert parsers._to_int("3.5") == "3.5"
+    assert parsers._to_int(7) == 7
 
 
 def test_to_number_handles_int_float_and_passthrough():
-    assert server._to_number("25") == 25
-    assert isinstance(server._to_number("25"), int)
-    assert server._to_number(".583") == 0.583
-    assert server._to_number("3.5") == 3.5
-    assert server._to_number("-") == "-"          # games_back placeholder
-    assert server._to_number("10/40") == "10/40"  # ratio stays a string
-    assert server._to_number("") == ""
+    assert parsers._to_number("25") == 25
+    assert isinstance(parsers._to_number("25"), int)
+    assert parsers._to_number(".583") == 0.583
+    assert parsers._to_number("3.5") == 3.5
+    assert parsers._to_number("-") == "-"          # games_back placeholder
+    assert parsers._to_number("10/40") == "10/40"  # ratio stays a string
+    assert parsers._to_number("") == ""
 
 
 # --- team summary extraction ----------------------------------------------
 
 def test_extract_team_summary_locates_fields_by_key():
-    s = server._extract_team_summary(fx.TEAM_NODE_5)
+    s = parsers._extract_team_summary(fx.TEAM_NODE_5)
     assert s["team_key"] == "469.l.1.t.5"
     assert s["name"] == "Poachers"
     assert s["category_points"] == "2"
@@ -47,7 +47,7 @@ def test_extract_team_summary_locates_fields_by_key():
 # --- matchup node: team/opponent framing ----------------------------------
 
 def test_parse_matchup_node_perspective_results():
-    m = server._parse_matchup_node(fx.MATCHUP_NODE, "469.l.1.t.5")
+    m = parsers._parse_matchup_node(fx.MATCHUP_NODE, "469.l.1.t.5")
     assert m["week"] == 10
     assert m["is_playoffs"] is False
     assert m["team"]["team_key"] == "469.l.1.t.5"
@@ -69,7 +69,7 @@ def test_parse_matchup_node_perspective_results():
 
 
 def test_parse_matchup_node_perspective_flips_for_opponent():
-    m = server._parse_matchup_node(fx.MATCHUP_NODE, "469.l.1.t.7")
+    m = parsers._parse_matchup_node(fx.MATCHUP_NODE, "469.l.1.t.7")
     assert m["team"]["team_key"] == "469.l.1.t.7"
     by_stat = {c["stat"]: c for c in m["categories"]}
     # what was a win for t5 is a loss for t7
@@ -80,7 +80,7 @@ def test_parse_matchup_node_perspective_flips_for_opponent():
 
 def test_parse_matchup_node_raises_when_team_absent():
     try:
-        server._parse_matchup_node(fx.MATCHUP_NODE, "469.l.1.t.99")
+        parsers._parse_matchup_node(fx.MATCHUP_NODE, "469.l.1.t.99")
     except ValueError:
         return
     raise AssertionError("expected ValueError for unknown perspective team")
@@ -89,7 +89,7 @@ def test_parse_matchup_node_raises_when_team_absent():
 # --- matchup node: neutral framing (scoreboard) ---------------------------
 
 def test_parse_matchup_node_neutral_values_and_winner():
-    m = server._parse_matchup_node(fx.MATCHUP_NODE)
+    m = parsers._parse_matchup_node(fx.MATCHUP_NODE)
     assert "teams" in m and "team" not in m
     assert {t["team_key"] for t in m["teams"]} == {"469.l.1.t.5", "469.l.1.t.7"}
 
@@ -106,21 +106,21 @@ def test_parse_matchup_node_neutral_values_and_winner():
 # --- full-response wrappers ------------------------------------------------
 
 def test_parse_matchup_unwraps_team_response():
-    m = server._parse_matchup(fx.MATCHUP_RAW, "469.l.1.t.5")
+    m = parsers._parse_matchup(fx.MATCHUP_RAW, "469.l.1.t.5")
     assert m["team"]["team_key"] == "469.l.1.t.5"
     assert m["opponent"]["team_key"] == "469.l.1.t.7"
 
 
 def test_parse_matchup_raises_on_empty():
     try:
-        server._parse_matchup({"fantasy_content": {"team": [None, {}]}}, "469.l.1.t.5")
+        parsers._parse_matchup({"fantasy_content": {"team": [None, {}]}}, "469.l.1.t.5")
     except ValueError:
         return
     raise AssertionError("expected ValueError when matchup node missing")
 
 
 def test_parse_scoreboard_returns_list_of_breakdowns():
-    out = server._parse_scoreboard(fx.SCOREBOARD_RAW)
+    out = parsers._parse_scoreboard(fx.SCOREBOARD_RAW)
     assert isinstance(out, list) and len(out) == 1
     assert "teams" in out[0]
     assert out[0]["week"] == 10
@@ -129,7 +129,7 @@ def test_parse_scoreboard_returns_list_of_breakdowns():
 # --- season stats + ranking ------------------------------------------------
 
 def test_parse_team_season_stats_coerces_values():
-    by_team = server._parse_team_season_stats(fx.TEAMS_STATS_RAW)
+    by_team = parsers._parse_team_season_stats(fx.TEAMS_STATS_RAW)
     assert set(by_team) == {"469.l.1.t.5", "469.l.1.t.7"}
     assert by_team["469.l.1.t.5"]["7"] == 308          # int
     assert by_team["469.l.1.t.5"]["26"] == 3.79        # float
@@ -142,7 +142,7 @@ def test_rank_season_categories_direction_and_ties():
         "B": {"12": 20, "26": 4.0},   # HR tied-low, ERA worst
         "C": {"12": 20, "26": 2.0},   # HR tied-low, ERA best
     }
-    ranked = server._rank_season_categories(stats)
+    ranked = parsers._rank_season_categories(stats)
 
     def rank(team, stat):
         return next(c["rank"] for c in ranked[team] if c["stat"] == stat)
@@ -159,7 +159,7 @@ def test_rank_season_categories_direction_and_ties():
 
 def test_rank_season_categories_unranked_when_non_numeric():
     stats = {"A": {"12": 30}, "B": {"12": ""}}
-    ranked = server._rank_season_categories(stats)
+    ranked = parsers._rank_season_categories(stats)
     b_hr = next(c for c in ranked["B"] if c["stat"] == "HR")
     assert b_hr["rank"] is None
     assert b_hr["value"] == ""
@@ -168,7 +168,7 @@ def test_rank_season_categories_unranked_when_non_numeric():
 # --- standings -------------------------------------------------------------
 
 def test_parse_standings_records_only():
-    out = server._parse_standings(fx.STANDINGS_LIST)
+    out = parsers._parse_standings(fx.STANDINGS_LIST)
     leader, second = out
     assert leader["rank"] == 1
     assert leader["record"] == {"wins": 50, "losses": 35, "ties": 5, "pct": 0.583}
@@ -179,7 +179,7 @@ def test_parse_standings_records_only():
 
 def test_parse_standings_merges_categories_by_team_key():
     season = {"469.l.1.t.5": [{"stat": "HR", "value": 62, "rank": 9}]}
-    out = server._parse_standings(fx.STANDINGS_LIST, season)
+    out = parsers._parse_standings(fx.STANDINGS_LIST, season)
     leader = next(t for t in out if t["team_key"] == "469.l.1.t.5")
     other = next(t for t in out if t["team_key"] == "469.l.1.t.7")
     assert leader["categories"] == [{"stat": "HR", "value": 62, "rank": 9}]
@@ -189,7 +189,7 @@ def test_parse_standings_merges_categories_by_team_key():
 # --- free-agent player flattening -----------------------------------------
 
 def test_flatten_raw_yahoo_player_meta_ownership_and_stats():
-    flat = server._flatten_raw_yahoo_player(fx.PLAYER_ENTRY)
+    flat = parsers._flatten_raw_yahoo_player(fx.PLAYER_ENTRY)
     assert flat["name"] == "Test Hitter"
     assert flat["player_id"] == "1"
     assert flat["editorial_team_abbr"] == "NYY"
@@ -200,7 +200,7 @@ def test_flatten_raw_yahoo_player_meta_ownership_and_stats():
 
 
 def test_flatten_raw_yahoo_player_handles_no_subresources():
-    flat = server._flatten_raw_yahoo_player([fx.PLAYER_ENTRY[0]])
+    flat = parsers._flatten_raw_yahoo_player([fx.PLAYER_ENTRY[0]])
     assert flat["name"] == "Test Hitter"
     assert "stats" not in flat
     assert "percent_owned" not in flat
@@ -219,17 +219,17 @@ _TEAMS = {
 
 
 def test_resolve_team_key_constructs_and_validates():
-    assert server._resolve_team_key(_FakeLeague(), _TEAMS, 7) == "469.l.1.t.7"
+    assert parsers._resolve_team_key(_FakeLeague(), _TEAMS, 7) == "469.l.1.t.7"
 
 
 def test_resolve_team_key_out_of_range_returns_none():
-    assert server._resolve_team_key(_FakeLeague(), _TEAMS, 99) is None
+    assert parsers._resolve_team_key(_FakeLeague(), _TEAMS, 99) is None
 
 
 def test_resolve_team_key_none_returns_owned_team():
-    assert server._resolve_team_key(_FakeLeague(), _TEAMS, None) == "469.l.1.t.5"
+    assert parsers._resolve_team_key(_FakeLeague(), _TEAMS, None) == "469.l.1.t.5"
 
 
 def test_resolve_team_key_none_without_owner_falls_back_to_first():
     teams = {"469.l.1.t.3": {"name": "A"}, "469.l.1.t.9": {"name": "B"}}
-    assert server._resolve_team_key(_FakeLeague(), teams, None) == "469.l.1.t.3"
+    assert parsers._resolve_team_key(_FakeLeague(), teams, None) == "469.l.1.t.3"

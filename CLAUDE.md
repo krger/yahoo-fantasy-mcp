@@ -17,8 +17,8 @@ This is a **Model Context Protocol (MCP) server** that exposes Yahoo Fantasy Bas
 
 ## Key files
 
-- `server.py` — main server: MCP tool definitions and Yahoo API client logic.
-- `server.py` is currently the **only** module — tool definitions, the Yahoo client, OAuth/token handling, and all response-parsing helpers (`_format_player`, `_flatten_raw_yahoo_player`, `_resolve_team_key`, etc.) live in it.
+- `server.py` — main server and entrypoint: MCP tool definitions, the Yahoo client, OAuth/token handling, free-agent request-building (`_resolve_sort`, `_fetch_free_agents_raw`), `_format_player`, and the `_handle_error` formatter.
+- `yahoo_parsers.py` — the pure Yahoo response parsers/normalizers (no network, no OAuth, no MCP): the `stat_id` constants plus `_to_int`/`_to_number`, `_flatten_raw_yahoo_player`, `_extract_team_summary`, `_parse_matchup_node`, `_parse_matchup`, `_parse_scoreboard`, `_parse_team_season_stats`, `_rank_season_categories`, `_parse_standings`, and `_resolve_team_key`. This is the unit-test target (the repo's main source of bugs); `server.py` imports from it.
 - **Yahoo OAuth credentials** load from `oauth2.json` in the repo root (override the path with the `YAHOO_OAUTH_FILE` env var). The file holds the `consumer_key`/`consumer_secret` plus the access + refresh tokens; `yahoo_oauth.OAuth2` refreshes the access token automatically when expired (`_get_oauth_session`). It is **gitignored and must never be committed.** Other config comes from env vars with defaults: `YAHOO_LEAGUE_ID` (default `12345`), `YAHOO_SPORT` (default `mlb`).
 
 ## Running locally (dev machine, not the deploy host)
@@ -46,8 +46,9 @@ quirks; `tests/test_parsers.py` covers `_to_int`/`_to_number`,
 `_extract_team_summary`, `_parse_matchup_node` (both framings),
 `_parse_matchup`, `_parse_scoreboard`, `_parse_team_season_stats`,
 `_rank_season_categories` (ranking direction + ties), `_parse_standings`,
-`_flatten_raw_yahoo_player`, and `_resolve_team_key`. **Add a case here when
-you touch a parser** — especially new stat_ids or response shapes.
+`_flatten_raw_yahoo_player`, and `_resolve_team_key` — all imported from
+`yahoo_parsers` (the test imports that module directly, not `server`). **Add a
+case here when you touch a parser** — especially new stat_ids or response shapes.
 
 Automated tests don't hit Yahoo, so there's still no substitute for exercising
 the actual tools against the live league for anything API-facing. After a
