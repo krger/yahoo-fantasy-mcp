@@ -1236,8 +1236,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "mcp", extras = ["cli"], specifier = ">=1.2.0" },
-    { name = "yahoo-fantasy-api" },
-    { name = "yahoo-oauth" },
+    { name = "yahoo-fantasy-api", specifier = ">=2.12.2" },
+    { name = "yahoo-oauth", specifier = ">=2.1.1" },
 ]
 
 [package.metadata.requires-dev]

@@ -7,8 +7,8 @@ license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = [
     "mcp[cli]>=1.2.0",
-    "yahoo_fantasy_api",
-    "yahoo_oauth",
+    "yahoo_fantasy_api>=2.12.2",
+    "yahoo_oauth>=2.1.1",
 ]
 
 [build-system]
