@@ -10,25 +10,81 @@ Yahoo responses are deeply nested and positional: arrays interleave data
 objects with empty ``[]`` placeholders, collections use numeric string keys
 (``"0"``, ``"1"``, ...) plus a ``count``, and stats arrive as
 ``{stat: {stat_id, value}}`` lists. Locate data by key/shape, never by index,
-and map stats by ``stat_id`` (see ``_STAT_ID_TO_NAME``).
+and map stats by ``stat_id`` (labels come from ``ScoringConfig``, built from
+the league's own settings rather than a hard-coded table).
 """
 
+from dataclasses import dataclass
 from typing import Optional
 
-# Yahoo stat_id -> display label for the league's scored + informational
-# matchup categories. Matchup responses key stats by numeric stat_id (see
-# "Yahoo API gotchas"); note the pitching K here is stat_id 42, distinct from
-# the batting K (21) in server.py's _STAT_NAME_TO_ID.
-_STAT_ID_TO_NAME = {
-    "7": "R", "12": "HR", "13": "RBI", "16": "SB", "3": "AVG",
-    "28": "W", "32": "SV", "42": "K", "26": "ERA", "27": "WHIP",
-    "50": "IP", "60": "H/AB",
-}
 
-# The 10 scored categories in display order, used for season-total ranking in
-# the standings. ERA and WHIP are "lower is better"; all others rank high-first.
-_SCORED_STAT_IDS = ["7", "12", "13", "16", "3", "28", "32", "42", "26", "27"]
-_LOWER_IS_BETTER = {"26", "27"}  # ERA, WHIP
+@dataclass(frozen=True)
+class ScoringConfig:
+    """The league's scoring categories, derived from its Yahoo settings.
+
+    Replaces the previously hard-coded stat_id tables so the parsers work for
+    any league's categories, not just one specific 10-category H2H setup.
+
+    - ``stat_id_to_name``: stat_id (as a string) -> display label, covering
+      both scored and informational ("only display") categories.
+    - ``scored_stat_ids``: the scored categories in display order (informational
+      stats like IP / H-AB excluded); used for standings season-total ranking.
+    - ``lower_is_better``: stat_ids where a lower value ranks higher (ERA/WHIP).
+    """
+    stat_id_to_name: dict[str, str]
+    scored_stat_ids: list[str]
+    lower_is_better: frozenset[str]
+
+    def label(self, stat_id: str) -> str:
+        """Display label for a stat_id, falling back to the id itself."""
+        return self.stat_id_to_name.get(stat_id, stat_id)
+
+    @classmethod
+    def empty(cls) -> "ScoringConfig":
+        """Fallback when league settings are unavailable: ids label as
+        themselves and nothing is treated as a scored/ranked category."""
+        return cls(stat_id_to_name={}, scored_stat_ids=[], lower_is_better=frozenset())
+
+
+def build_scoring_config(raw_settings: dict) -> ScoringConfig:
+    """Build a ScoringConfig from a raw ``league/{key}/settings`` response.
+
+    Yahoo nests the categories at
+    ``fantasy_content.league[1].settings[0].stat_categories.stats`` as a list of
+    ``{"stat": {stat_id, display_name, sort_order, is_only_display_stat, ...}}``.
+    ``sort_order`` is ``"1"`` when higher is better and ``"0"`` when lower is
+    better (ERA/WHIP); ``is_only_display_stat`` is ``"1"`` for informational
+    categories (e.g. IP, H/AB) that are shown but not scored. Degrades to
+    ``ScoringConfig.empty()`` if the expected shape is absent.
+    """
+    league = raw_settings.get("fantasy_content", {}).get("league", [])
+    settings = league[1].get("settings") if len(league) > 1 else None
+    if isinstance(settings, list):
+        settings = settings[0] if settings else {}
+    if not isinstance(settings, dict):
+        return ScoringConfig.empty()
+    stats = settings.get("stat_categories", {}).get("stats", [])
+
+    names: dict[str, str] = {}
+    scored: list[str] = []
+    lower: set[str] = set()
+    for entry in stats:
+        st = entry.get("stat", {}) if isinstance(entry, dict) else {}
+        sid = st.get("stat_id")
+        if sid is None:
+            continue
+        sid = str(sid)
+        names[sid] = st.get("display_name", sid)
+        # is_only_display_stat is "1" for informational categories, else None.
+        if str(st.get("is_only_display_stat")) != "1":
+            scored.append(sid)
+        if str(st.get("sort_order")) == "0":
+            lower.add(sid)
+    return ScoringConfig(
+        stat_id_to_name=names,
+        scored_stat_ids=scored,
+        lower_is_better=frozenset(lower),
+    )
 
 
 def _to_int(value):
@@ -52,7 +108,7 @@ def _to_number(value):
     return value
 
 
-def _flatten_raw_yahoo_player(player_entry: list) -> dict:
+def _flatten_raw_yahoo_player(player_entry: list, scoring: ScoringConfig) -> dict:
     """Flatten Yahoo's list-of-dicts player representation into the flat
     shape that ``_format_player`` expects.
 
@@ -118,9 +174,7 @@ def _flatten_raw_yahoo_player(player_entry: list) -> dict:
                 st = s.get("stat", {}) if isinstance(s, dict) else {}
                 sid = st.get("stat_id")
                 if sid is not None:
-                    stats[_STAT_ID_TO_NAME.get(str(sid), str(sid))] = _to_number(
-                        st.get("value")
-                    )
+                    stats[scoring.label(str(sid))] = _to_number(st.get("value"))
             if stats:
                 flat["stats"] = stats
 
@@ -161,7 +215,11 @@ def _extract_team_summary(team_node: list) -> dict:
     }
 
 
-def _parse_matchup_node(matchup: dict, perspective_team_key: Optional[str] = None) -> dict:
+def _parse_matchup_node(
+    matchup: dict,
+    scoring: ScoringConfig,
+    perspective_team_key: Optional[str] = None,
+) -> dict:
     """Parse one Yahoo matchup node into a category-by-category breakdown.
 
     Both the team matchup endpoint and the league scoreboard wrap the same
@@ -220,7 +278,7 @@ def _parse_matchup_node(matchup: dict, perspective_team_key: Optional[str] = Non
             else:
                 result = None  # informational category (not scored)
             categories.append({
-                "stat": _STAT_ID_TO_NAME.get(sid, sid),
+                "stat": scoring.label(sid),
                 "stat_id": sid,
                 "team": value,
                 "opponent": opp["stats"].get(sid),
@@ -237,7 +295,7 @@ def _parse_matchup_node(matchup: dict, perspective_team_key: Optional[str] = Non
     categories = []
     for sid in a["stats"]:
         categories.append({
-            "stat": _STAT_ID_TO_NAME.get(sid, sid),
+            "stat": scoring.label(sid),
             "stat_id": sid,
             "values": {
                 a["team_key"]: a["stats"].get(sid),
@@ -249,7 +307,7 @@ def _parse_matchup_node(matchup: dict, perspective_team_key: Optional[str] = Non
     return {**meta, "teams": [_team_info(a), _team_info(b)], "categories": categories}
 
 
-def _parse_matchup(raw: dict, my_team_key: str) -> dict:
+def _parse_matchup(raw: dict, my_team_key: str, scoring: ScoringConfig) -> dict:
     """Turn Yahoo's raw team-matchup response into a team-vs-opponent breakdown.
 
     Yahoo only returns the opponent's team_key from ``Team.matchup()``; the
@@ -264,10 +322,10 @@ def _parse_matchup(raw: dict, my_team_key: str) -> dict:
     )
     if not matchup:
         raise ValueError("Matchup data not found in Yahoo response")
-    return _parse_matchup_node(matchup, my_team_key)
+    return _parse_matchup_node(matchup, scoring, my_team_key)
 
 
-def _parse_scoreboard(raw: dict) -> list:
+def _parse_scoreboard(raw: dict, scoring: ScoringConfig) -> list:
     """Turn Yahoo's raw scoreboard response into a list of neutral matchup
     breakdowns, one per head-to-head pairing for the week.
     """
@@ -278,7 +336,7 @@ def _parse_scoreboard(raw: dict) -> list:
     for key, val in matchups.items():
         if key == "count" or not isinstance(val, dict) or "matchup" not in val:
             continue
-        out.append(_parse_matchup_node(val["matchup"]))
+        out.append(_parse_matchup_node(val["matchup"], scoring))
     return out
 
 
@@ -299,23 +357,24 @@ def _parse_team_season_stats(raw: dict) -> dict:
     return out
 
 
-def _rank_season_categories(stats_by_team: dict) -> dict:
+def _rank_season_categories(stats_by_team: dict, scoring: ScoringConfig) -> dict:
     """Turn ``{team_key: {stat_id: value}}`` into
     ``{team_key: [{stat, stat_id, value, rank}]}`` for the scored categories.
 
     Rank is 1-based standard competition ranking (ties share a rank), with
-    ERA/WHIP ranked low-first and every other category high-first. Teams with
-    a non-numeric value for a category are unranked (``rank: null``).
+    ``scoring.lower_is_better`` categories (e.g. ERA/WHIP) ranked low-first and
+    every other category high-first. Teams with a non-numeric value for a
+    category are unranked (``rank: null``).
     """
     # Per-category rank lookup: {stat_id: {team_key: rank}}.
     ranks = {}
-    for sid in _SCORED_STAT_IDS:
+    for sid in scoring.scored_stat_ids:
         vals = {
             tk: s[sid]
             for tk, s in stats_by_team.items()
             if isinstance(s.get(sid), (int, float))
         }
-        lower = sid in _LOWER_IS_BETTER
+        lower = sid in scoring.lower_is_better
         ranks[sid] = {
             tk: 1 + sum(
                 1 for other in vals.values()
@@ -328,12 +387,12 @@ def _rank_season_categories(stats_by_team: dict) -> dict:
     for tk, s in stats_by_team.items():
         out[tk] = [
             {
-                "stat": _STAT_ID_TO_NAME.get(sid, sid),
+                "stat": scoring.label(sid),
                 "stat_id": sid,
                 "value": s.get(sid),
                 "rank": ranks[sid].get(tk),
             }
-            for sid in _SCORED_STAT_IDS
+            for sid in scoring.scored_stat_ids
         ]
     return out
 

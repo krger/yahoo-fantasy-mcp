@@ -48,6 +48,7 @@ from schemas import (
 # Pure Yahoo response parsers/normalizers (the unit-test target) live in their
 # own module; import the ones the tool handlers and free-agent fetch use.
 from yahoo_parsers import (
+    ScoringConfig,
     _flatten_raw_yahoo_player,
     _parse_matchup,
     _parse_scoreboard,
@@ -55,6 +56,7 @@ from yahoo_parsers import (
     _parse_team_season_stats,
     _rank_season_categories,
     _resolve_team_key,
+    build_scoring_config,
 )
 
 # ---------------------------------------------------------------------------
@@ -118,6 +120,39 @@ def _get_league(sc: OAuth2) -> yfa.League:
     lg = gm.to_league(league_key)
     lg.league_key = league_key           # stash for later use
     return lg
+
+
+# Cached scoring config — the league's categories don't change mid-season, so
+# fetch the settings once per process and reuse.
+_scoring_config: Optional[ScoringConfig] = None
+
+
+def _get_scoring_config(sc: OAuth2, lg: yfa.League) -> ScoringConfig:
+    """Return the league's ScoringConfig, fetching league settings once.
+
+    Built from the raw ``league/{key}/settings`` response (yfa's
+    ``League.settings()`` drops ``stat_categories``). Degrades to
+    ``ScoringConfig.empty()`` if the call fails, so labeling falls back to raw
+    stat_ids and standings simply omit category ranks rather than erroring.
+    """
+    global _scoring_config
+    if _scoring_config is not None:
+        return _scoring_config
+    try:
+        url = (
+            f"https://fantasysports.yahooapis.com/fantasy/v2/"
+            f"league/{lg.league_key}/settings?format=json"
+        )
+        resp = sc.session.get(url)
+        if resp.status_code != 200:
+            logger.warning(f"Settings call returned {resp.status_code}; "
+                           "using empty scoring config")
+            return ScoringConfig.empty()
+        _scoring_config = build_scoring_config(resp.json())
+    except Exception as e:
+        logger.warning(f"Failed to build scoring config: {e}")
+        return ScoringConfig.empty()
+    return _scoring_config
 
 
 def _format_player(player: dict) -> dict:
@@ -202,6 +237,7 @@ def _resolve_sort(sort_key: Optional[str]) -> tuple[Optional[str], bool]:
 def _fetch_free_agents_raw(
     sc: OAuth2,
     league_key: str,
+    scoring: ScoringConfig,
     *,
     status: str = "FA",
     position: Optional[str] = None,
@@ -266,7 +302,7 @@ def _fetch_free_agents_raw(
             if key == "count":
                 continue
             if isinstance(entry, dict) and "player" in entry:
-                flat = _flatten_raw_yahoo_player(entry["player"])
+                flat = _flatten_raw_yahoo_player(entry["player"], scoring)
                 if flat:
                     page_players.append(flat)
 
@@ -525,7 +561,8 @@ async def yahoo_get_standings() -> str:
         try:
             raw_stats = lg.yhandler.get(f"league/{lg.league_key}/teams/stats")
             season_categories = _rank_season_categories(
-                _parse_team_season_stats(raw_stats)
+                _parse_team_season_stats(raw_stats),
+                _get_scoring_config(sc, lg),
             )
         except Exception as e:
             logger.warning(f"Could not fetch season category totals: {e}")
@@ -573,7 +610,7 @@ async def yahoo_get_scoreboard(params: GetScoreboardInput) -> str:
         result = {
             "league_id": cfg.league_id,
             "week": week,
-            "matchups": _parse_scoreboard(scoreboard),
+            "matchups": _parse_scoreboard(scoreboard, _get_scoring_config(sc, lg)),
         }
         return json.dumps(result, indent=2, default=str)
 
@@ -632,6 +669,7 @@ async def yahoo_search_free_agents(params: SearchFreeAgentsInput) -> str:
         fa = _fetch_free_agents_raw(
             sc,
             lg.league_key,
+            _get_scoring_config(sc, lg),
             status=params.status or "FA",
             position=params.position,
             sort=params.sort or "AR",
@@ -896,7 +934,7 @@ async def yahoo_get_matchup(params: GetMatchupInput) -> str:
         # opponent's key, so parse the raw response for the full breakdown.
         week = params.week if params.week is not None else lg.current_week()
         raw = tm.yhandler.get_matchup_raw(team_key, week)
-        matchup = _parse_matchup(raw, team_key)
+        matchup = _parse_matchup(raw, team_key, _get_scoring_config(sc, lg))
 
         team_name = teams[team_key].get("name", "Unknown")
 

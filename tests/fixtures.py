@@ -194,3 +194,39 @@ PLAYER_ENTRY = [
         {"stat": {"stat_id": "3", "value": ".271"}},
     ]}},
 ]
+
+
+# --- raw league/{key}/settings response (for build_scoring_config) ----------
+# stat_categories.stats lists each category with display_name, sort_order
+# ("1" high-first, "0" low-first), and is_only_display_stat ("1" for
+# informational stats like IP / H-AB). Mirrors the league's 10 scored
+# categories plus the two informational ones, in Yahoo's display order.
+
+def _stat(stat_id, display_name, sort_order, only_display=None):
+    s = {"stat_id": stat_id, "display_name": display_name, "sort_order": sort_order}
+    if only_display is not None:
+        s["is_only_display_stat"] = only_display
+    return {"stat": s}
+
+
+SETTINGS_RAW = {
+    "fantasy_content": {
+        "league": [
+            {"league_key": "469.l.1", "name": "Test League"},
+            {"settings": [{"stat_categories": {"stats": [
+                _stat(60, "H/AB", "1", only_display="1"),   # informational
+                _stat(7, "R", "1"),
+                _stat(12, "HR", "1"),
+                _stat(13, "RBI", "1"),
+                _stat(16, "SB", "1"),
+                _stat(3, "AVG", "1"),
+                _stat(50, "IP", "1", only_display="1"),      # informational
+                _stat(28, "W", "1"),
+                _stat(32, "SV", "1"),
+                _stat(42, "K", "1"),
+                _stat(26, "ERA", "0"),                       # lower is better
+                _stat(27, "WHIP", "0"),                      # lower is better
+            ]}}]},
+        ]
+    }
+}

@@ -10,6 +10,33 @@ numeric coercion.
 import yahoo_parsers as parsers
 from tests import fixtures as fx
 
+# Scoring config built from the league-settings fixture; the parsers that
+# label/rank categories take this instead of reading module globals.
+SCORING = parsers.build_scoring_config(fx.SETTINGS_RAW)
+
+
+# --- scoring config from league settings -----------------------------------
+
+def test_build_scoring_config_from_settings():
+    sc = SCORING
+    # labels cover scored + informational categories
+    assert sc.label("7") == "R"
+    assert sc.label("26") == "ERA"
+    assert sc.label("60") == "H/AB"
+    assert sc.label("999") == "999"            # unknown -> id itself
+    # scored categories in display order, informational (IP 50, H/AB 60) excluded
+    assert sc.scored_stat_ids == ["7", "12", "13", "16", "3", "28", "32", "42", "26", "27"]
+    assert "60" not in sc.scored_stat_ids and "50" not in sc.scored_stat_ids
+    # sort_order "0" -> lower is better
+    assert sc.lower_is_better == frozenset({"26", "27"})
+
+
+def test_build_scoring_config_empty_on_bad_shape():
+    sc = parsers.build_scoring_config({})
+    assert sc.scored_stat_ids == [] and sc.stat_id_to_name == {}
+    assert sc.label("7") == "7"                # degrades to the raw id
+
+
 # --- numeric coercion ------------------------------------------------------
 
 def test_to_int_coerces_only_integers():
@@ -46,7 +73,7 @@ def test_extract_team_summary_locates_fields_by_key():
 # --- matchup node: team/opponent framing ----------------------------------
 
 def test_parse_matchup_node_perspective_results():
-    m = parsers._parse_matchup_node(fx.MATCHUP_NODE, "469.l.1.t.5")
+    m = parsers._parse_matchup_node(fx.MATCHUP_NODE, SCORING, "469.l.1.t.5")
     assert m["week"] == 10
     assert m["is_playoffs"] is False
     assert m["team"]["team_key"] == "469.l.1.t.5"
@@ -68,7 +95,7 @@ def test_parse_matchup_node_perspective_results():
 
 
 def test_parse_matchup_node_perspective_flips_for_opponent():
-    m = parsers._parse_matchup_node(fx.MATCHUP_NODE, "469.l.1.t.7")
+    m = parsers._parse_matchup_node(fx.MATCHUP_NODE, SCORING, "469.l.1.t.7")
     assert m["team"]["team_key"] == "469.l.1.t.7"
     by_stat = {c["stat"]: c for c in m["categories"]}
     # what was a win for t5 is a loss for t7
@@ -79,7 +106,7 @@ def test_parse_matchup_node_perspective_flips_for_opponent():
 
 def test_parse_matchup_node_raises_when_team_absent():
     try:
-        parsers._parse_matchup_node(fx.MATCHUP_NODE, "469.l.1.t.99")
+        parsers._parse_matchup_node(fx.MATCHUP_NODE, SCORING, "469.l.1.t.99")
     except ValueError:
         return
     raise AssertionError("expected ValueError for unknown perspective team")
@@ -88,7 +115,7 @@ def test_parse_matchup_node_raises_when_team_absent():
 # --- matchup node: neutral framing (scoreboard) ---------------------------
 
 def test_parse_matchup_node_neutral_values_and_winner():
-    m = parsers._parse_matchup_node(fx.MATCHUP_NODE)
+    m = parsers._parse_matchup_node(fx.MATCHUP_NODE, SCORING)
     assert "teams" in m and "team" not in m
     assert {t["team_key"] for t in m["teams"]} == {"469.l.1.t.5", "469.l.1.t.7"}
 
@@ -105,21 +132,21 @@ def test_parse_matchup_node_neutral_values_and_winner():
 # --- full-response wrappers ------------------------------------------------
 
 def test_parse_matchup_unwraps_team_response():
-    m = parsers._parse_matchup(fx.MATCHUP_RAW, "469.l.1.t.5")
+    m = parsers._parse_matchup(fx.MATCHUP_RAW, "469.l.1.t.5", SCORING)
     assert m["team"]["team_key"] == "469.l.1.t.5"
     assert m["opponent"]["team_key"] == "469.l.1.t.7"
 
 
 def test_parse_matchup_raises_on_empty():
     try:
-        parsers._parse_matchup({"fantasy_content": {"team": [None, {}]}}, "469.l.1.t.5")
+        parsers._parse_matchup({"fantasy_content": {"team": [None, {}]}}, "469.l.1.t.5", SCORING)
     except ValueError:
         return
     raise AssertionError("expected ValueError when matchup node missing")
 
 
 def test_parse_scoreboard_returns_list_of_breakdowns():
-    out = parsers._parse_scoreboard(fx.SCOREBOARD_RAW)
+    out = parsers._parse_scoreboard(fx.SCOREBOARD_RAW, SCORING)
     assert isinstance(out, list) and len(out) == 1
     assert "teams" in out[0]
     assert out[0]["week"] == 10
@@ -141,7 +168,7 @@ def test_rank_season_categories_direction_and_ties():
         "B": {"12": 20, "26": 4.0},   # HR tied-low, ERA worst
         "C": {"12": 20, "26": 2.0},   # HR tied-low, ERA best
     }
-    ranked = parsers._rank_season_categories(stats)
+    ranked = parsers._rank_season_categories(stats, SCORING)
 
     def rank(team, stat):
         return next(c["rank"] for c in ranked[team] if c["stat"] == stat)
@@ -158,7 +185,7 @@ def test_rank_season_categories_direction_and_ties():
 
 def test_rank_season_categories_unranked_when_non_numeric():
     stats = {"A": {"12": 30}, "B": {"12": ""}}
-    ranked = parsers._rank_season_categories(stats)
+    ranked = parsers._rank_season_categories(stats, SCORING)
     b_hr = next(c for c in ranked["B"] if c["stat"] == "HR")
     assert b_hr["rank"] is None
     assert b_hr["value"] == ""
@@ -188,7 +215,7 @@ def test_parse_standings_merges_categories_by_team_key():
 # --- free-agent player flattening -----------------------------------------
 
 def test_flatten_raw_yahoo_player_meta_ownership_and_stats():
-    flat = parsers._flatten_raw_yahoo_player(fx.PLAYER_ENTRY)
+    flat = parsers._flatten_raw_yahoo_player(fx.PLAYER_ENTRY, SCORING)
     assert flat["name"] == "Test Hitter"
     assert flat["player_id"] == "1"
     assert flat["editorial_team_abbr"] == "NYY"
@@ -199,7 +226,7 @@ def test_flatten_raw_yahoo_player_meta_ownership_and_stats():
 
 
 def test_flatten_raw_yahoo_player_handles_no_subresources():
-    flat = parsers._flatten_raw_yahoo_player([fx.PLAYER_ENTRY[0]])
+    flat = parsers._flatten_raw_yahoo_player([fx.PLAYER_ENTRY[0]], SCORING)
     assert flat["name"] == "Test Hitter"
     assert "stats" not in flat
     assert "percent_owned" not in flat
