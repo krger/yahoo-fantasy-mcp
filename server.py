@@ -29,6 +29,8 @@ import yahoo_fantasy_api as yfa
 from mcp.server.fastmcp import FastMCP
 from yahoo_oauth import OAuth2
 
+from config import load_config
+
 # Pydantic input models (the MCP tools' input contract) live in schemas.py;
 # import the ones used as handler parameter annotations.
 from schemas import (
@@ -59,12 +61,10 @@ from yahoo_parsers import (
 # Configuration
 # ---------------------------------------------------------------------------
 
-YAHOO_LEAGUE_ID = os.environ.get("YAHOO_LEAGUE_ID", "12345")
-YAHOO_SPORT = os.environ.get("YAHOO_SPORT", "mlb")
-CREDENTIALS_FILE = os.environ.get(
-    "YAHOO_OAUTH_FILE",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "oauth2.json"),
-)
+# League-specific settings come from the environment (see config.py). Loaded
+# once at import so misconfiguration (e.g. a missing YAHOO_LEAGUE_ID) fails
+# loudly at startup rather than mid-request.
+cfg = load_config()
 
 # Logging — stderr only (stdout is reserved for MCP stdio transport)
 logging.basicConfig(
@@ -81,12 +81,12 @@ logger = logging.getLogger("yahoo_fantasy_mcp")
 
 def _get_oauth_session() -> OAuth2:
     """Create or refresh an OAuth2 session from the credentials file."""
-    if not os.path.exists(CREDENTIALS_FILE):
+    if not os.path.exists(cfg.oauth_file):
         raise FileNotFoundError(
-            f"OAuth credentials file not found at {CREDENTIALS_FILE}. "
+            f"OAuth credentials file not found at {cfg.oauth_file}. "
             "Create oauth2.json with your consumer_key and consumer_secret."
         )
-    sc = OAuth2(None, None, from_file=CREDENTIALS_FILE)
+    sc = OAuth2(None, None, from_file=cfg.oauth_file)
     if not sc.token_is_valid():
         sc.refresh_access_token()
     return sc
@@ -98,18 +98,23 @@ def _get_league(sc: OAuth2) -> yfa.League:
     Attaches ``league_key`` as an attribute on the returned League so
     downstream helpers (e.g. ``_get_player_ownership``) can reference it
     without reconstructing the key.
+
+    When ``cfg.season`` is set we look the league up within that season; when
+    it is None we construct the key from the current game id, which targets
+    the current season automatically.
     """
-    gm = yfa.Game(sc, YAHOO_SPORT)
-    league_ids = gm.league_ids(year=2026)
-    # Try to find the configured league
-    for lid in league_ids:
-        if YAHOO_LEAGUE_ID in lid:
-            lg = gm.to_league(lid)
-            lg.league_key = lid          # stash for later use
-            return lg
-    # Fallback: try constructing the key directly
+    gm = yfa.Game(sc, cfg.sport)
+    if cfg.season is not None:
+        # Season pinned: find the league among that year's leagues.
+        for lid in gm.league_ids(year=cfg.season):
+            if cfg.league_id in lid:
+                lg = gm.to_league(lid)
+                lg.league_key = lid          # stash for later use
+                return lg
+    # No season pinned (auto-detect current), or not found in the pinned
+    # season: construct the key directly from the current game id.
     game_id = gm.game_id()
-    league_key = f"{game_id}.l.{YAHOO_LEAGUE_ID}"
+    league_key = f"{game_id}.l.{cfg.league_id}"
     lg = gm.to_league(league_key)
     lg.league_key = league_key           # stash for later use
     return lg
@@ -393,7 +398,7 @@ async def app_lifespan(server):
     try:
         sc = _get_oauth_session()
         lg = _get_league(sc)
-        logger.info(f"Connected to Yahoo Fantasy league {YAHOO_LEAGUE_ID}")
+        logger.info(f"Connected to Yahoo Fantasy league {cfg.league_id}")
         yield {"sc": sc, "lg": lg}
     except Exception as e:
         logger.error(f"Failed to initialize Yahoo connection: {e}")
@@ -526,7 +531,7 @@ async def yahoo_get_standings() -> str:
             logger.warning(f"Could not fetch season category totals: {e}")
 
         result = {
-            "league_id": YAHOO_LEAGUE_ID,
+            "league_id": cfg.league_id,
             "team_count": len(standings),
             "standings": _parse_standings(standings, season_categories),
         }
@@ -566,7 +571,7 @@ async def yahoo_get_scoreboard(params: GetScoreboardInput) -> str:
         scoreboard = lg.matchups(week=week)
 
         result = {
-            "league_id": YAHOO_LEAGUE_ID,
+            "league_id": cfg.league_id,
             "week": week,
             "matchups": _parse_scoreboard(scoreboard),
         }
@@ -839,7 +844,7 @@ async def yahoo_get_league_settings() -> str:
         settings = lg.settings()
 
         return json.dumps({
-            "league_id": YAHOO_LEAGUE_ID,
+            "league_id": cfg.league_id,
             "settings": settings,
         }, indent=2, default=str)
 
@@ -1141,7 +1146,7 @@ async def yahoo_get_transactions(params: GetTransactionsInput) -> str:
             })
 
         return json.dumps({
-            "league_id": YAHOO_LEAGUE_ID,
+            "league_id": cfg.league_id,
             "filters": {
                 "types": [t.value for t in params.transaction_types]
                 if params.transaction_types else "all",
@@ -1200,7 +1205,7 @@ async def yahoo_list_teams() -> str:
         team_list.sort(key=lambda t: (t["team_number"] is None, t["team_number"]))
 
         return json.dumps({
-            "league_id": YAHOO_LEAGUE_ID,
+            "league_id": cfg.league_id,
             "team_count": len(team_list),
             "teams": team_list,
         }, indent=2, default=str)

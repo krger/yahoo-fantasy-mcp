@@ -16,16 +16,18 @@ This is a **Model Context Protocol (MCP) server** that exposes Yahoo Fantasy Bas
 
 ## Key files
 
-The codebase is split across three modules along stable seams — this
+The codebase is split across four modules along stable seams — this
 modularization is **complete**; respect these boundaries rather than
 re-consolidating into one file or splitting further without a clear reason.
 Keep each module's concern intact: parsers stay pure (no network/OAuth/MCP),
-schemas stay declarative, and the Yahoo client + tool wiring stay in `server.py`.
+schemas stay declarative, config stays env-only, and the Yahoo client + tool
+wiring stay in `server.py`.
 
 - `server.py` — main server and entrypoint: MCP tool definitions, the Yahoo client, OAuth/token handling, free-agent request-building (`_resolve_sort`, `_fetch_free_agents_raw`), `_format_player`, and the `_handle_error` formatter.
+- `config.py` — runtime configuration loaded from environment variables (`load_config()` → a frozen `Config` dataclass). `server.py` calls it once at import (`cfg = load_config()`) so misconfiguration fails loudly at startup. `YAHOO_LEAGUE_ID` is **required** (no default — a fork must set its own); `YAHOO_SPORT` defaults `mlb`; `YAHOO_SEASON` is optional (auto-detects the current season when unset); `YAHOO_OAUTH_FILE` overrides the creds path.
 - `yahoo_parsers.py` — the pure Yahoo response parsers/normalizers (no network, no OAuth, no MCP): the `stat_id` constants plus `_to_int`/`_to_number`, `_flatten_raw_yahoo_player`, `_extract_team_summary`, `_parse_matchup_node`, `_parse_matchup`, `_parse_scoreboard`, `_parse_team_season_stats`, `_rank_season_categories`, `_parse_standings`, and `_resolve_team_key`. This is the unit-test target (the repo's main source of bugs); `server.py` imports from it.
 - `schemas.py` — the Pydantic input models (`GetRosterInput`, `SearchFreeAgentsInput`, `GetMatchupInput`, the `TransactionType` enum, etc.): the MCP tools' input contract. FastMCP turns these into the JSON schema advertised to clients, so class/field names are part of the public contract — renaming is a breaking change. `server.py` imports the models it annotates handlers with.
-- **Yahoo OAuth credentials** load from `oauth2.json` in the repo root (override the path with the `YAHOO_OAUTH_FILE` env var). The file holds the `consumer_key`/`consumer_secret` plus the access + refresh tokens; `yahoo_oauth.OAuth2` refreshes the access token automatically when expired (`_get_oauth_session`). It is **gitignored and must never be committed.** Other config comes from env vars with defaults: `YAHOO_LEAGUE_ID` (default `12345`), `YAHOO_SPORT` (default `mlb`).
+- **Yahoo OAuth credentials** load from `oauth2.json` in the repo root (override the path with the `YAHOO_OAUTH_FILE` env var). The file holds the `consumer_key`/`consumer_secret` plus the access + refresh tokens; `yahoo_oauth.OAuth2` refreshes the access token automatically when expired (`_get_oauth_session`). It is **gitignored and must never be committed.** Other config comes from env vars via `config.py` (see the `config.py` bullet above): `YAHOO_LEAGUE_ID` is required, `YAHOO_SPORT`/`YAHOO_SEASON`/`YAHOO_OAUTH_FILE` are optional.
 
 ## Running locally (dev machine, not the deploy host)
 
@@ -33,10 +35,10 @@ Develop on a workstation, never directly against the live deployed copy. The liv
 
 ```
 # from the repo root, with oauth2.json present
-python server.py
+YAHOO_LEAGUE_ID=12345 python server.py
 ```
 
-This launches the streamable-HTTP server (uvicorn) on `0.0.0.0:8000`, serving MCP at `/mcp`. On the deploy host the same command runs under systemd via the repo's venv (`venv/bin/python server.py`). No env vars are required for the default league (12345); set `YAHOO_OAUTH_FILE`, `YAHOO_LEAGUE_ID`, or `YAHOO_SPORT` to override.
+This launches the streamable-HTTP server (uvicorn) on `0.0.0.0:8000`, serving MCP at `/mcp`. **`YAHOO_LEAGUE_ID` is required** — the server now exits at startup without it (no baked-in default). On the deploy host the same command runs under systemd via the repo's venv (`venv/bin/python server.py`), with `YAHOO_LEAGUE_ID` supplied through the unit's environment (see Deployment). Optionally set `YAHOO_SPORT`, `YAHOO_SEASON`, or `YAHOO_OAUTH_FILE`.
 
 ## Testing / verifying changes
 
@@ -92,6 +94,15 @@ systemctl is-active yahoo-fantasy-mcp.service   # expect: active
 ```
 
 The server is a systemd unit, `yahoo-fantasy-mcp.service` (enabled, `ExecStart=.../venv/bin/python server.py`). The public endpoint is fronted by `cloudflared-tunnel.service` (the Cloudflare Tunnel); leave that one alone. Check logs with `journalctl -u yahoo-fantasy-mcp.service -n 50`.
+
+**Required env on the deploy host:** `YAHOO_LEAGUE_ID` has no code default, so the unit must supply it or the service exits at startup. It's set via a systemd drop-in, `/etc/systemd/system/yahoo-fantasy-mcp.service.d/override.conf`:
+
+```
+[Service]
+Environment=YAHOO_LEAGUE_ID=12345
+```
+
+After editing the drop-in run `sudo systemctl daemon-reload` before restarting. `YAHOO_SEASON` is intentionally left unset (the server auto-detects the current season).
 
 Before starting an editing session, make sure the deploy host and the repo are in sync (`git fetch && git status` on the deploy host) so you're editing from the same baseline that's actually running. Hand-edits made on the deploy host without committing will show as uncommitted changes — resolve those first.
 

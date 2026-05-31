@@ -83,7 +83,7 @@ Add this to the `mcpServers` section (adjust paths to match your system):
         "run", "python", "server.py"
       ],
       "env": {
-        "YAHOO_LEAGUE_ID": "12345"
+        "YAHOO_LEAGUE_ID": "YOUR_LEAGUE_ID"
       }
     }
   }
@@ -101,7 +101,7 @@ Add this to the `mcpServers` section (adjust paths to match your system):
         "run", "python", "server.py"
       ],
       "env": {
-        "YAHOO_LEAGUE_ID": "12345"
+        "YAHOO_LEAGUE_ID": "YOUR_LEAGUE_ID"
       }
     }
   }
@@ -117,8 +117,9 @@ Fantasy tools available in the tools menu (hammer icon).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `YAHOO_LEAGUE_ID` | `12345` | Your Yahoo league ID |
-| `YAHOO_SPORT` | `mlb` | Sport code |
+| `YAHOO_LEAGUE_ID` | _(required)_ | Your Yahoo league ID — the numeric id in your league URL (e.g. `12345`). The server refuses to start without it. |
+| `YAHOO_SPORT` | `mlb` | Yahoo game code |
+| `YAHOO_SEASON` | _(current)_ | Season year (e.g. `2026`). If unset, the current season is auto-detected; set it to pin a past season. |
 | `YAHOO_OAUTH_FILE` | `./oauth2.json` | Path to OAuth credentials |
 
 ## Example Prompts
