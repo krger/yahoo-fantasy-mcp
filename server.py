@@ -243,6 +243,7 @@ def _fetch_free_agents_raw(
     position: Optional[str] = None,
     sort: Optional[str] = "AR",
     count: int = 25,
+    time_period: Optional[str] = None,
 ) -> list[dict]:
     """Call Yahoo's /players collection directly and return a list of flat
     player dicts matching the shape ``_format_player`` consumes.
@@ -266,9 +267,13 @@ def _fetch_free_agents_raw(
     if sort_value:
         filters.append(f"sort={quote(sort_value, safe='')}")
         if is_stat_id:
-            # Stat-ID sorts need a sort_type; default to season-to-date.
-            filters.append("sort_type=season")
-            filters.append(f"sort_season={season}")
+            # Stat-ID sorts need a sort_type; default to season-to-date. A
+            # recent-form window (lastweek/lastmonth/biweekly) ranks by that
+            # period instead; only "season" takes a sort_season.
+            period = time_period or "season"
+            filters.append(f"sort_type={period}")
+            if period == "season":
+                filters.append(f"sort_season={season}")
 
     collected: list[dict] = []
     start = 0
@@ -314,6 +319,47 @@ def _fetch_free_agents_raw(
         start += PAGE
 
     return collected[:requested]
+
+
+def _fetch_player_stats_by_keys(
+    sc: OAuth2, league_key: str, player_keys: list[str], scoring: ScoringConfig
+) -> dict[str, dict]:
+    """Fetch season category stats for specific players, keyed by player_id.
+
+    Uses the league players collection with an explicit ``player_keys`` filter
+    and ``;out=stats`` — the same response shape ``_flatten_raw_yahoo_player``
+    already parses for free agents. Chunked to Yahoo's 25-per-request cap.
+    Returns ``{player_id: stats_map}`` for players that had stats.
+    """
+    out: dict[str, dict] = {}
+    PAGE = 25
+    for i in range(0, len(player_keys), PAGE):
+        chunk = player_keys[i:i + PAGE]
+        keys_csv = quote(",".join(chunk), safe=",")
+        url = (
+            f"https://fantasysports.yahooapis.com/fantasy/v2/"
+            f"league/{league_key}/players;player_keys={keys_csv};out=stats?format=json"
+        )
+        resp = sc.session.get(url)
+        if resp.status_code != 200:
+            logger.warning(
+                f"Roster stats fetch returned {resp.status_code}: {resp.text[:200]}"
+            )
+            continue
+        league_data = resp.json().get("fantasy_content", {}).get("league", [])
+        if not isinstance(league_data, list) or len(league_data) < 2:
+            continue
+        players_block = league_data[1].get("players")
+        if not isinstance(players_block, dict):
+            continue
+        for key, entry in players_block.items():
+            if key == "count" or not isinstance(entry, dict) or "player" not in entry:
+                continue
+            flat = _flatten_raw_yahoo_player(entry["player"], scoring)
+            pid = flat.get("player_id")
+            if pid is not None and flat.get("stats"):
+                out[str(pid)] = flat["stats"]
+    return out
 
 
 def _get_player_ownership(sc: OAuth2, league_key: str, player_id) -> dict:
@@ -513,6 +559,23 @@ async def yahoo_get_roster(params: GetRosterInput) -> str:
         team_name = teams[team_key].get("name", f"Team {params.team_number or '?'}")
         formatted = [_format_player(p) for p in roster]
 
+        # Optionally enrich each player with season category totals (one
+        # batched call), merged in by player_id.
+        if params.include_stats and formatted:
+            game_id = lg.league_key.split(".")[0]
+            pkeys = [
+                f"{game_id}.p.{p['player_id']}"
+                for p in formatted
+                if p.get("player_id")
+            ]
+            stats_by_id = _fetch_player_stats_by_keys(
+                sc, lg.league_key, pkeys, _get_scoring_config(sc, lg)
+            )
+            for p in formatted:
+                stats = stats_by_id.get(str(p.get("player_id", "")))
+                if stats:
+                    p["stats"] = stats
+
         result = {
             "team_name": team_name,
             "team_key": team_key,
@@ -674,6 +737,7 @@ async def yahoo_search_free_agents(params: SearchFreeAgentsInput) -> str:
             position=params.position,
             sort=params.sort or "AR",
             count=params.count or 25,
+            time_period=params.time_period,
         )
 
         formatted = [_format_player(p) for p in fa]
@@ -681,6 +745,7 @@ async def yahoo_search_free_agents(params: SearchFreeAgentsInput) -> str:
         result = {
             "position_filter": params.position or "all",
             "sort_by": params.sort,
+            "time_period": params.time_period or "season",
             "status": params.status,
             "count": len(formatted),
             "players": formatted,
@@ -1509,6 +1574,57 @@ async def yahoo_get_player_notes(params: GetPlayerNotesInput) -> str:
 
     except Exception as e:
         return _handle_error(e)
+
+
+# ---------------------------------------------------------------------------
+# Prompts — one-click templates that orchestrate the tools above for the
+# common multi-step questions. The strategy lives in the prompt text (it tells
+# Claude which tools to chain), keeping the tools themselves a thin data layer.
+# ---------------------------------------------------------------------------
+
+@mcp.prompt(title="Analyze my matchup")
+def analyze_matchup(team_number: str = "") -> str:
+    """Summarize the current head-to-head matchup: categories won/lost/tied."""
+    whose = f"team {team_number}" if team_number else "my team"
+    arg = f" with team_number={team_number}" if team_number else ""
+    return (
+        f"Analyze {whose}'s current head-to-head matchup. Call yahoo_get_matchup{arg}. "
+        "Summarize which scoring categories are being won, lost, and tied, with the "
+        "current values and margins. Call out the closest categories and any that "
+        "look effectively decided, then give the projected category score and a "
+        "sentence on where the matchup will be won or lost."
+    )
+
+
+@mcp.prompt(title="Waiver wire help")
+def waiver_help(team_number: str = "") -> str:
+    """Find free-agent pickups that target the categories I'm losing."""
+    whose = f"team {team_number}" if team_number else "my team"
+    arg = f" with team_number={team_number}" if team_number else ""
+    return (
+        f"Help me find waiver pickups for {whose}.\n"
+        f"1. Call yahoo_get_matchup{arg} and identify the scoring categories I'm "
+        "losing or only narrowly winning.\n"
+        "2. For each weak category, call yahoo_search_free_agents sorted by the "
+        "relevant stat with time_period=lastweek to surface players in good recent "
+        "form (e.g. sort=SB for steals, sort=K for pitcher strikeouts, sort=HR for "
+        "power).\n"
+        "3. Recommend 3-5 available players who would most improve my weak "
+        "categories, each with a one-line rationale and their recent numbers."
+    )
+
+
+@mcp.prompt(title="Weekly recap")
+def weekly_recap() -> str:
+    """Recap standings, my matchup, and recent league activity."""
+    return (
+        "Give me a weekly recap. Call yahoo_get_standings for the current standings, "
+        "yahoo_get_matchup for my matchup status this week, and yahoo_get_transactions "
+        "for recent league activity. Summarize my standing and record, how my matchup "
+        "is going (and the categories that will decide it), and any notable adds, "
+        "drops, or trades around the league."
+    )
+
 
 # ---------------------------------------------------------------------------
 # Entry point

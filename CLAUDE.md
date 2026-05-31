@@ -81,14 +81,18 @@ Keep tool names and input schemas stable — they are the server's public contra
 - `yahoo_get_standings` — league standings. Returns `standings` as a normalized list (via `_parse_standings`): each team has numeric `rank`, `playoff_seed`, a structured `record` (`wins`/`losses`/`ties`/`pct`), `games_back` (`null` for the leader), and a `categories` list of season totals for the scoring categories, each with the team's league `rank` in that category (rate stats like ERA/WHIP ranked low-first). The standings feed itself has no category stats; they come from a separate `league/{key}/teams/stats` call that degrades gracefully (standings still return without `categories` if it fails).
 - `yahoo_get_scoreboard` — all matchups for a week. Returns `matchups` as a list of parsed breakdowns (same core parser as `yahoo_get_matchup`, neutral framing): each has matchup meta, a `teams` list (`name`, `team_key`, `category_points`), and a `categories` list where each entry carries per-stat `values` keyed by `team_key`, the winning `team_key` (or `"tie"`/`null` for informational stats), and a `scored` flag. `week` is resolved to the numeric current week when omitted.
 - `yahoo_get_matchup` — one team's H2H matchup detail. Returns a structured `matchup` object (not just the opponent key): matchup meta (`week`, `week_start`/`week_end`, `status`, `is_playoffs`), both teams (`team`/`opponent` with `name`, `team_key`, `category_points`), and a `categories` list giving each side's value per stat plus `result` (`win`/`loss`/`tie`, from Yahoo's `stat_winner`) and a `scored` flag (informational stats like H/AB and IP are `scored: false`). Parsed by `_parse_matchup` from the raw response, since yfa's `Team.matchup()` only yields the opponent's key.
-- `yahoo_get_roster` — a team's roster (supports `day` / `week`)
+- `yahoo_get_roster` — a team's roster (supports `day` / `week`; `include_stats=true` enriches each player with season category totals via one batched `players;player_keys=…;out=stats` call, parsed by `_flatten_raw_yahoo_player` and merged by player_id)
 - `yahoo_get_league_settings` — config, rules, scoring
 - `yahoo_get_transactions` — recent transaction history
-- `yahoo_search_free_agents` — available free agents. Each player includes a `stats` map of season totals per scoring category (labeled via the league-derived `ScoringConfig`, numbers coerced; H/AB kept as a ratio string), fetched inline via `;out=percent_owned,stats` and parsed in `_flatten_raw_yahoo_player`.
+- `yahoo_search_free_agents` — available free agents. Each player includes a `stats` map of season totals per scoring category (labeled via the league-derived `ScoringConfig`, numbers coerced; H/AB kept as a ratio string), fetched inline via `;out=percent_owned,stats` and parsed in `_flatten_raw_yahoo_player`. `time_period` (`season`/`lastweek`/`lastmonth`/`biweekly`) sets the Yahoo `sort_type` for stat-based sorts — used to surface recent-form pickups; only `season` sends `sort_season`. The displayed `stats` remain season totals; the window only controls ranking order.
 - `yahoo_get_player_stats` — single player lookup
 - `yahoo_get_players_batch` — multiple players in one call
 - `yahoo_get_player_notes` — news / injury notes
 - `yahoo_get_player_ownership` — who owns a player
+
+## Prompts
+
+`@mcp.prompt` templates (in `server.py`, after the tools) that orchestrate the tools for common multi-step questions: `analyze_matchup`, `waiver_help`, `weekly_recap`. **Design rule:** the orchestration/strategy lives in the prompt text (it tells Claude which tools to chain and how to reason), keeping the tools themselves a thin read-only data layer. Put new "do X for me" workflows here as prompts rather than baking strategy into tool handlers. `waiver_help` leans on `yahoo_search_free_agents`' `time_period=lastweek` for recent form.
 
 ## Yahoo API gotchas
 

@@ -9,7 +9,7 @@ dependency on the Yahoo client or parsers — so they live apart from
 """
 
 from enum import Enum
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -42,6 +42,14 @@ class GetRosterInput(BaseModel):
             "provided, 'day' takes precedence."
         ),
         pattern=r"^\d{4}-\d{2}-\d{2}$",
+    )
+    include_stats: bool = Field(
+        default=False,
+        description=(
+            "When true, enrich each rostered player with their season totals "
+            "for the league's scoring categories (one extra batched call). "
+            "Default false keeps the roster lightweight."
+        ),
     )
 
 
@@ -81,6 +89,16 @@ class SearchFreeAgentsInput(BaseModel):
         description=(
             "Player availability status. FA = free agents only, "
             "W = waivers, A = all available (FA + W). Default: FA."
+        ),
+    )
+    time_period: Optional[Literal["season", "lastweek", "lastmonth", "biweekly"]] = Field(
+        default=None,
+        description=(
+            "Time window for stat/category sorts: season (default), lastweek, "
+            "lastmonth, or biweekly (last two weeks). Use lastweek/biweekly to "
+            "surface players in good recent form for waiver pickups. Only "
+            "affects stat-based sorts; ignored for AR/OR/NAME. (Displayed stats "
+            "remain season totals; the window controls the ranking order.)"
         ),
     )
 

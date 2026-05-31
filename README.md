@@ -13,11 +13,22 @@ A read-only MCP server that gives Claude access to your Yahoo Fantasy Baseball l
 | `yahoo_get_roster` | View any team's roster (yours or opponent's) |
 | `yahoo_get_standings` | Current league standings |
 | `yahoo_get_scoreboard` | All matchups for a given week |
-| `yahoo_search_free_agents` | Search available players by position/stat |
+| `yahoo_search_free_agents` | Search available players by position/stat, with recent-form windows (last week / two weeks / month) |
 | `yahoo_get_player_stats` | Look up a specific player's stats |
 | `yahoo_get_league_settings` | League rules, scoring categories, deadlines |
 | `yahoo_get_matchup` | Detailed H2H matchup breakdown |
+| `yahoo_get_roster` | A team's roster, optionally enriched with each player's season stats |
 | `yahoo_list_teams` | List all teams (useful for finding team numbers) |
+
+## Prompts
+
+One-click prompt templates (in Claude's connector menu) that chain the tools for common multi-step questions:
+
+| Prompt | What it does |
+|--------|--------------|
+| **Analyze my matchup** | Summarizes your current head-to-head matchup — categories won/lost/tied, margins, and where it'll be decided |
+| **Waiver wire help** | Identifies the categories you're losing, then surfaces recent-form free agents who'd improve them |
+| **Weekly recap** | Standings + your matchup status + notable league transactions |
 
 ## Setup
 
