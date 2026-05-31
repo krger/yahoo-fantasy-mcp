@@ -2,6 +2,8 @@
 name = "yahoo-fantasy-mcp"
 version = "0.1.0"
 description = "MCP server for Yahoo Fantasy Baseball"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = [
     "mcp[cli]>=1.2.0",

@@ -1,7 +1,11 @@
 oauth2.json
 
-# Python / test artifacts
+# Python / test / build artifacts
 __pycache__/
 *.pyc
 .pytest_cache/
+.ruff_cache/
 .venv/
+dist/
+build/
+*.egg-info/

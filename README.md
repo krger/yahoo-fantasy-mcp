@@ -4,6 +4,8 @@
 
 A read-only MCP server that lets Claude Desktop access your Yahoo Fantasy Baseball league data.
 
+**Works with any Yahoo league.** Point it at your own league with `YAHOO_LEAGUE_ID` (there's no baked-in default) — the server reads your league's scoring categories from Yahoo at runtime, so standings ranks and matchup breakdowns adapt to whatever categories your league actually uses (it doesn't assume a particular 10-category setup). The current season is auto-detected.
+
 ## Tools
 
 | Tool | Description |
@@ -150,3 +152,7 @@ baseball.fantasysports.yahoo.com.
 **Tools not showing in Claude Desktop**
 Check the Claude Desktop logs for MCP errors. On macOS:
 `~/Library/Logs/Claude/mcp*.log`
+
+## License
+
+[MIT](LICENSE) © 2026 Kyle Green
