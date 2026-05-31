@@ -15,7 +15,7 @@ jobs:
         uses: astral-sh/setup-uv@v8.1.0  # no moving v8 tag published; pin exact
         with:
           enable-cache: true
-          python-version: "3.14"
+          python-version: "3.13"  # match the deploy host (production) interpreter
 
       - name: Sync dependencies (incl. dev group)
         run: uv sync --group dev --locked

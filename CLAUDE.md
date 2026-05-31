@@ -11,8 +11,7 @@ This is a **Model Context Protocol (MCP) server** that exposes Yahoo Fantasy Bas
 - **Edge security:** the endpoint sits behind a Cloudflare Tunnel, with Cloudflare Access + Managed OAuth in front. The MCP server itself does **not** implement OAuth — Access handles authentication and only forwards authenticated requests. Do not add an OAuth/auth layer to the server without coordinating; it would conflict with the edge config.
 - **Upstream API:** Yahoo Fantasy Sports API (OAuth2). The server holds a Yahoo refresh token and mints access tokens to call Yahoo.
 
-<!-- TODO: confirm/adjust the Python version and dependency manager below -->
-- **Python version:** 3.14.5
+- **Python version:** requires `>=3.10` (`pyproject.toml`). the deploy host (production) runs **3.13.5**; CI pins **3.13** to match it. Dev machines may run newer (e.g. 3.14.5) — avoid relying on syntax/stdlib newer than 3.13.
 - **Dependency management:** `uv`
 
 ## Key files
