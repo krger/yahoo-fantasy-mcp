@@ -15,7 +15,6 @@ and map stats by ``stat_id`` (see ``_STAT_ID_TO_NAME``).
 
 from typing import Optional
 
-
 # Yahoo stat_id -> display label for the league's scored + informational
 # matchup categories. Matchup responses key stats by numeric stat_id (see
 # "Yahoo API gotchas"); note the pitching K here is stat_id 42, distinct from

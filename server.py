@@ -17,30 +17,17 @@ Tools:
 """
 
 import json
+import logging
 import os
 import sys
-import logging
-from datetime import date, datetime
 from contextlib import asynccontextmanager
+from datetime import date, datetime
 from typing import Optional
 from urllib.parse import quote
 
-from mcp.server.fastmcp import FastMCP
-
 import yahoo_fantasy_api as yfa
+from mcp.server.fastmcp import FastMCP
 from yahoo_oauth import OAuth2
-
-# Pure Yahoo response parsers/normalizers (the unit-test target) live in their
-# own module; import the ones the tool handlers and free-agent fetch use.
-from yahoo_parsers import (
-    _flatten_raw_yahoo_player,
-    _parse_matchup,
-    _parse_scoreboard,
-    _parse_standings,
-    _parse_team_season_stats,
-    _rank_season_categories,
-    _resolve_team_key,
-)
 
 # Pydantic input models (the MCP tools' input contract) live in schemas.py;
 # import the ones used as handler parameter annotations.
@@ -56,6 +43,17 @@ from schemas import (
     SearchFreeAgentsInput,
 )
 
+# Pure Yahoo response parsers/normalizers (the unit-test target) live in their
+# own module; import the ones the tool handlers and free-agent fetch use.
+from yahoo_parsers import (
+    _flatten_raw_yahoo_player,
+    _parse_matchup,
+    _parse_scoreboard,
+    _parse_standings,
+    _parse_team_season_stats,
+    _rank_season_categories,
+    _resolve_team_key,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration

@@ -20,5 +20,8 @@ jobs:
       - name: Sync dependencies (incl. dev group)
         run: uv sync --group dev --locked
 
+      - name: Lint with ruff
+        run: uv run ruff check .
+
       - name: Run parser tests
         run: uv run pytest -q

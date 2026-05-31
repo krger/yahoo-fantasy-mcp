@@ -45,7 +45,13 @@ They run offline against faithful fixtures (no network, no credentials):
 
 ```
 uv run pytest          # or: .venv/bin/python -m pytest
+uv run ruff check .     # lint: unused imports, undefined names, import order
+uv run ruff check --fix .   # auto-fix the fixable ones
 ```
+
+Ruff config lives in `pyproject.toml` (`[tool.ruff]`): defaults (pyflakes `F`
++ `E4/E7/E9`) plus `I` for import sorting, targeting py3.13. Keep it green —
+CI runs `ruff check` before pytest.
 
 `tests/fixtures.py` holds minimal Yahoo responses reproducing the positional
 quirks; `tests/test_parsers.py` covers `_to_int`/`_to_number`,
@@ -66,9 +72,10 @@ change:
 
 ## Deployment (pull-on-the deploy host)
 
-Deploys are manual and intentional. CI (`.github/workflows/test.yml`) runs the
-pytest suite on every push to `main` and on PRs, but it **only runs tests — it
-never deploys**. Deployment is always a hand `git pull` on the deploy host.
+Deploys are manual and intentional. CI (`.github/workflows/test.yml`) runs
+`ruff check` then the pytest suite on every push to `main` and on PRs, but it
+**only lints and tests — it never deploys**. Deployment is always a hand
+`git pull` on the deploy host.
 
 ```
 # on your dev machine

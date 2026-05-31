@@ -10,7 +10,6 @@ numeric coercion.
 import yahoo_parsers as parsers
 from tests import fixtures as fx
 
-
 # --- numeric coercion ------------------------------------------------------
 
 def test_to_int_coerces_only_integers():

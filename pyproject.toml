@@ -17,8 +17,17 @@ build-backend = "hatchling.build"
 packages = ["."]
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "ruff>=0.6"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py313"
+
+[tool.ruff.lint]
+# Defaults (E4/E7/E9 + pyflakes F — catches unused imports, undefined names)
+# plus I for import sorting. Keep this conservative: it should catch real
+# drift, not fight the existing style.
+extend-select = ["I"]
