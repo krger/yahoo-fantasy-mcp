@@ -1,8 +1,8 @@
 """
 Yahoo Fantasy Baseball MCP Server
 
-A read-only MCP server that exposes Yahoo Fantasy Baseball data
-to Claude Desktop via stdio transport.
+A read-only MCP server that exposes Yahoo Fantasy Baseball data over a
+remote, streamable-HTTP MCP endpoint at /mcp (served by uvicorn).
 
 Tools:
     - yahoo_get_roster: View any team's roster in the league
@@ -12,7 +12,7 @@ Tools:
     - yahoo_get_player_stats: Stats for a specific player (includes ownership)
     - yahoo_get_player_ownership: Quick lookup of who owns a player
     - yahoo_get_league_settings: League rules and configuration
-    - yahoo_get_matchups: Head-to-head matchup details
+    - yahoo_get_matchup: Head-to-head matchup details
     - yahoo_get_transactions: League transaction history (adds, drops, trades)
 """
 

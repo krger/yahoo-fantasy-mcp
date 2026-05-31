@@ -2,7 +2,7 @@
 
 [![tests](https://github.com/krger/yahoo-fantasy-mcp/actions/workflows/test.yml/badge.svg)](https://github.com/krger/yahoo-fantasy-mcp/actions/workflows/test.yml)
 
-A read-only MCP server that lets Claude Desktop access your Yahoo Fantasy Baseball league data.
+A read-only MCP server that gives Claude access to your Yahoo Fantasy Baseball league data. It runs as a **remote MCP server over streamable HTTP** (serving the MCP endpoint at `/mcp`) — you host it and connect Claude to it by URL, rather than running it as a local stdio subprocess.
 
 **Works with any Yahoo league.** Point it at your own league with `YAHOO_LEAGUE_ID` (there's no baked-in default) — the server reads your league's scoring categories from Yahoo at runtime, so standings ranks and matchup breakdowns adapt to whatever categories your league actually uses (it doesn't assume a particular 10-category setup). The current season is auto-detected.
 
@@ -49,71 +49,71 @@ uv venv
 uv pip install "mcp[cli]>=1.2.0" yahoo_fantasy_api yahoo_oauth
 ```
 
-### 3. Authenticate with Yahoo (one-time)
+### 3. Get Yahoo credentials and authenticate (one-time)
 
-The first time you run the server, `yahoo_oauth` will open a browser window
-asking you to authorize the app. Grant access, and it will save your tokens
-back into `oauth2.json`. After this initial auth, tokens refresh automatically.
+Create a Yahoo app at <https://developer.yahoo.com/apps/create/>:
 
-To test authentication before hooking up Claude Desktop:
+- **Application Type:** Confidential Client.
+- **API Permissions:** enable **Fantasy Sports → Read** (or Read/Write if you
+  ever want roster moves).
+- **Redirect URI(s):** an `https://` URL **on a domain you control**. Yahoo
+  rejects `localhost` and no longer supports the out-of-band (`oob`) flow, so
+  use a real domain — it doesn't have to actually serve anything (e.g. your
+  eventual host, `https://fantasy.example.com`).
+
+Copy the **Client ID** and **Client Secret**, then create `oauth2.json` in the
+repo root:
+
+```json
+{
+  "consumer_key": "<your Client ID>",
+  "consumer_secret": "<your Client Secret>",
+  "callback_uri": "<the exact Redirect URI you registered>"
+}
+```
+
+`callback_uri` must match the registered Redirect URI byte-for-byte. Now run the
+one-time authorize flow:
 
 ```bash
-uv run python -c "
-from yahoo_oauth import OAuth2
-sc = OAuth2(None, None, from_file='oauth2.json')
-print('Token valid:', sc.token_is_valid())
-print('Auth OK')
-"
+uv run python -c "from yahoo_oauth import OAuth2; OAuth2(None, None, from_file='oauth2.json')"
 ```
 
-### 4. Configure Claude Desktop
+It opens a browser to Yahoo's consent page. After you approve, Yahoo redirects
+to `<callback_uri>?code=XXXX`. **The landing page may show a 404 or an error —
+that's fine; the value you need is in the browser's address bar.** Copy the
+`code` parameter from the URL and paste it at the `Enter verifier :` prompt.
+The library writes `access_token`/`refresh_token` into `oauth2.json`, and tokens
+refresh automatically from then on (`oauth2.json` is gitignored — never commit it).
 
-Edit your Claude Desktop config file:
+### 4. Run the server
 
-- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+This is a streamable-HTTP server (not stdio). Start it from the repo root:
 
-Add this to the `mcpServers` section (adjust paths to match your system):
-
-```json
-{
-  "mcpServers": {
-    "yahoo-fantasy": {
-      "command": "uv",
-      "args": [
-        "--directory", "/FULL/PATH/TO/yahoo-fantasy-mcp",
-        "run", "python", "server.py"
-      ],
-      "env": {
-        "YAHOO_LEAGUE_ID": "YOUR_LEAGUE_ID"
-      }
-    }
-  }
-}
+```bash
+YAHOO_LEAGUE_ID=YOUR_LEAGUE_ID uv run python server.py
 ```
 
-**Windows example paths:**
-```json
-{
-  "mcpServers": {
-    "yahoo-fantasy": {
-      "command": "uv",
-      "args": [
-        "--directory", "C:\\Users\\YourUser\\yahoo-fantasy-mcp",
-        "run", "python", "server.py"
-      ],
-      "env": {
-        "YAHOO_LEAGUE_ID": "YOUR_LEAGUE_ID"
-      }
-    }
-  }
-}
-```
+It listens on `0.0.0.0:8000` and serves MCP at **`http://localhost:8000/mcp`**.
+(See [Environment Variables](#environment-variables) for the other settings.)
 
-### 5. Restart Claude Desktop
+The server itself does **no authentication** — it trusts whatever reaches it.
+For anything past local use, put it behind a reverse proxy or tunnel that
+terminates TLS and enforces access control. (This repo's reference deployment
+runs behind a Cloudflare Tunnel with Cloudflare Access in front, exposed at a
+public `/mcp` URL.)
 
-After saving the config, restart Claude Desktop. You should see the Yahoo
-Fantasy tools available in the tools menu (hammer icon).
+### 5. Connect Claude to the server
+
+Add the server to Claude (Desktop or web) as a **custom connector**, pointing at
+its `/mcp` URL:
+
+- Local: `http://localhost:8000/mcp`
+- Hosted: `https://your-domain/mcp`
+
+In Claude, go to **Settings → Connectors → Add custom connector**, paste the
+URL, and save. Once connected, the Yahoo Fantasy tools appear in the connectors
+list and are available in chat.
 
 ## Environment Variables
 
@@ -137,21 +137,38 @@ Once connected, try asking Claude things like:
 
 ## Troubleshooting
 
+**Yahoo shows "Not Found" instead of asking for authorization**
+Yahoo dropped support for the out-of-band (`oob`) flow. Make sure `oauth2.json`
+has a `callback_uri` set to a registered `https://` Redirect URI (not
+`localhost`), as in step 3 — then grab the `code` from the browser's address
+bar after approving.
+
 **"OAuth credentials file not found"**
-Make sure `oauth2.json` is in the same directory as `server.py`.
+Make sure `oauth2.json` is in the same directory as `server.py` (or point
+`YAHOO_OAUTH_FILE` at it).
 
 **"Authentication failed"**
-Delete the token fields from `oauth2.json` (keep only `consumer_key` and
-`consumer_secret`) and re-run to redo the browser auth flow.
+Delete the token fields from `oauth2.json` (keep `consumer_key`,
+`consumer_secret`, and `callback_uri`) and re-run the authorize flow.
+
+**`YAHOO_LEAGUE_ID is required`**
+The server has no default league — set the `YAHOO_LEAGUE_ID` env var before
+starting it.
 
 **"Resource not found"**
-The league may not be active yet, or the game ID for the current MLB
-season may not be available. Check that your league is visible at
-baseball.fantasysports.yahoo.com.
+The league may not be active yet, or the game ID for the current
+season may not be available. Check that your league is visible on Yahoo
+Fantasy.
 
-**Tools not showing in Claude Desktop**
-Check the Claude Desktop logs for MCP errors. On macOS:
-`~/Library/Logs/Claude/mcp*.log`
+**`Not Acceptable: Client must accept text/event-stream`**
+That's the MCP endpoint's normal response to a plain browser/`curl` — it's not
+an error in the server. Connect with an MCP client (the custom connector
+above), not a browser.
+
+**Connector won't connect / tools not showing**
+Confirm the server is running and reachable at the `/mcp` URL, that any proxy
+in front forwards to it, and check the server logs (when run under systemd:
+`journalctl -u yahoo-fantasy-mcp.service -n 50`).
 
 ## License
 
