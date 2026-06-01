@@ -13,10 +13,41 @@ from typing import List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# Shared description for the per-call league override so it reads consistently
+# across every tool's schema.
+_LEAGUE_ID_DESC = (
+    "Yahoo numeric league id (e.g. '60467') to target a specific league. "
+    "Omit to use the server's default league. Call yahoo_list_my_leagues to "
+    "discover the leagues this account belongs to."
+)
 
-class GetRosterInput(BaseModel):
-    """Input for retrieving a team's roster."""
+
+class LeagueScopedInput(BaseModel):
+    """Base for tools that operate on a single league.
+
+    Carries the optional ``league_id`` override (falling back to the server's
+    configured default) plus the shared model config, so every league-scoped
+    tool advertises the field identically. Subclasses add their own fields.
+    """
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    league_id: Optional[str] = Field(default=None, description=_LEAGUE_ID_DESC)
+
+
+class GetStandingsInput(LeagueScopedInput):
+    """Input for retrieving league standings (league override only)."""
+
+
+class GetLeagueSettingsInput(LeagueScopedInput):
+    """Input for retrieving league settings (league override only)."""
+
+
+class ListTeamsInput(LeagueScopedInput):
+    """Input for listing teams (league override only)."""
+
+
+class GetRosterInput(LeagueScopedInput):
+    """Input for retrieving a team's roster."""
 
     team_number: Optional[int] = Field(
         default=None,
@@ -53,9 +84,8 @@ class GetRosterInput(BaseModel):
     )
 
 
-class SearchFreeAgentsInput(BaseModel):
+class SearchFreeAgentsInput(LeagueScopedInput):
     """Input for searching free agents."""
-    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     position: Optional[str] = Field(
         default=None,
@@ -103,9 +133,8 @@ class SearchFreeAgentsInput(BaseModel):
     )
 
 
-class GetPlayerStatsInput(BaseModel):
+class GetPlayerStatsInput(LeagueScopedInput):
     """Input for getting player statistics."""
-    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     player_name: str = Field(
         ...,
@@ -115,9 +144,8 @@ class GetPlayerStatsInput(BaseModel):
     )
 
 
-class GetPlayerOwnershipInput(BaseModel):
+class GetPlayerOwnershipInput(LeagueScopedInput):
     """Input for looking up player ownership."""
-    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     player_name: str = Field(
         ...,
@@ -127,9 +155,8 @@ class GetPlayerOwnershipInput(BaseModel):
     )
 
 
-class GetScoreboardInput(BaseModel):
+class GetScoreboardInput(LeagueScopedInput):
     """Input for retrieving the league scoreboard."""
-    model_config = ConfigDict(extra="forbid")
 
     week: Optional[int] = Field(
         default=None,
@@ -139,9 +166,8 @@ class GetScoreboardInput(BaseModel):
     )
 
 
-class GetMatchupInput(BaseModel):
+class GetMatchupInput(LeagueScopedInput):
     """Input for getting a specific team's matchup details."""
-    model_config = ConfigDict(extra="forbid")
 
     team_number: Optional[int] = Field(
         default=None,
@@ -168,9 +194,8 @@ class TransactionType(str, Enum):
     TRADE = "trade"
 
 
-class GetTransactionsInput(BaseModel):
+class GetTransactionsInput(LeagueScopedInput):
     """Input for retrieving league transaction history."""
-    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     transaction_types: Optional[List[TransactionType]] = Field(
         default=None,
@@ -196,9 +221,8 @@ class GetTransactionsInput(BaseModel):
     )
 
 
-class GetPlayersBatchInput(BaseModel):
+class GetPlayersBatchInput(LeagueScopedInput):
     """Input for batch player lookup."""
-    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     player_names: List[str] = Field(
         ...,
@@ -208,9 +232,8 @@ class GetPlayersBatchInput(BaseModel):
     )
 
 
-class GetPlayerNotesInput(BaseModel):
+class GetPlayerNotesInput(LeagueScopedInput):
     """Input for fetching a single player's notes / injury status."""
-    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     player_name: str = Field(
         ...,

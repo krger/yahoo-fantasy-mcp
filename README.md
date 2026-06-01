@@ -19,6 +19,9 @@ A read-only MCP server that gives Claude access to your Yahoo Fantasy Baseball l
 | `yahoo_get_matchup` | Detailed H2H matchup breakdown |
 | `yahoo_get_roster` | A team's roster, optionally enriched with each player's season stats |
 | `yahoo_list_teams` | List all teams (useful for finding team numbers) |
+| `yahoo_list_my_leagues` | List the leagues your Yahoo account is in (for the `league_id` override) |
+
+**Multiple leagues?** `YAHOO_LEAGUE_ID` sets your default league, but every tool also accepts an optional `league_id` argument to target another league your account belongs to. Call `yahoo_list_my_leagues` to see the available ids; an id outside your account's leagues is rejected.
 
 ## Prompts
 
@@ -130,7 +133,7 @@ list and are available in chat.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `YAHOO_LEAGUE_ID` | _(required)_ | Your Yahoo league ID — the numeric id in your league URL (e.g. `12345`). The server refuses to start without it. |
+| `YAHOO_LEAGUE_ID` | _(required)_ | Your **default** Yahoo league ID — the numeric id in your league URL (e.g. `12345`). The server refuses to start without it. Tools accept a per-call `league_id` to target other leagues your account is in. |
 | `YAHOO_SPORT` | `mlb` | Yahoo game code |
 | `YAHOO_SEASON` | _(current)_ | Season year (e.g. `2026`). If unset, the current season is auto-detected; set it to pin a past season. |
 | `YAHOO_OAUTH_FILE` | `./oauth2.json` | Path to OAuth credentials |
@@ -145,6 +148,7 @@ Once connected, try asking Claude things like:
 - "Show me the free agent starting pitchers sorted by ERA"
 - "Compare my team's roster to team 3's roster"
 - "What's my matchup looking like this week?"
+- "Which leagues am I in?" / "Show the standings for my other league"
 
 ## Troubleshooting
 
