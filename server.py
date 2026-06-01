@@ -14,6 +14,11 @@ Tools:
     - yahoo_get_league_settings: League rules and configuration
     - yahoo_get_matchup: Head-to-head matchup details
     - yahoo_get_transactions: League transaction history (adds, drops, trades)
+    - yahoo_list_my_leagues: The leagues the authenticated account belongs to
+
+Tools that operate on a league accept an optional ``league_id`` to target a
+league other than the configured default (``cfg.league_id``); see the
+``LeagueScopedInput`` schema and ``_get_league``.
 """
 
 import json
@@ -34,6 +39,7 @@ from config import load_config
 # Pydantic input models (the MCP tools' input contract) live in schemas.py;
 # import the ones used as handler parameter annotations.
 from schemas import (
+    GetLeagueSettingsInput,
     GetMatchupInput,
     GetPlayerNotesInput,
     GetPlayerOwnershipInput,
@@ -41,7 +47,9 @@ from schemas import (
     GetPlayerStatsInput,
     GetRosterInput,
     GetScoreboardInput,
+    GetStandingsInput,
     GetTransactionsInput,
+    ListTeamsInput,
     SearchFreeAgentsInput,
 )
 
@@ -51,6 +59,7 @@ from yahoo_parsers import (
     ScoringConfig,
     _flatten_raw_yahoo_player,
     _parse_matchup,
+    _parse_my_leagues,
     _parse_scoreboard,
     _parse_standings,
     _parse_team_season_stats,
@@ -94,8 +103,43 @@ def _get_oauth_session() -> OAuth2:
     return sc
 
 
-def _get_league(sc: OAuth2) -> yfa.League:
-    """Get the Yahoo Fantasy league object.
+# Cached list of the leagues the authenticated account belongs to (parsed via
+# _parse_my_leagues). Membership doesn't change mid-session, so fetch once and
+# reuse — and use it to validate per-call league_id overrides.
+_my_leagues: Optional[list[dict]] = None
+
+
+def _get_my_leagues(sc: OAuth2) -> list[dict]:
+    """Return the account's leagues (id/key/name/season), fetched once.
+
+    Hits ``users/games/leagues?use_login=1`` (filtered to ``cfg.sport``) and
+    parses it with ``_parse_my_leagues``. Degrades to ``[]`` on failure —
+    callers treat an empty result as "discovery unavailable" and fall back to
+    permissive behavior rather than breaking. The empty result is not cached,
+    so a transient failure is retried on the next call.
+    """
+    global _my_leagues
+    if _my_leagues is not None:
+        return _my_leagues
+    try:
+        gm = yfa.Game(sc, cfg.sport)
+        raw = gm.yhandler.get_leagues_raw(game_codes=[cfg.sport])
+        parsed = _parse_my_leagues(raw)
+    except Exception as e:
+        logger.warning(f"Could not enumerate account leagues: {e}")
+        return []
+    _my_leagues = parsed
+    return _my_leagues
+
+
+def _get_league(sc: OAuth2, league_id: Optional[str] = None) -> yfa.League:
+    """Get the Yahoo Fantasy league object for ``league_id`` (or the default).
+
+    ``league_id`` is the optional per-call override; when omitted we use
+    ``cfg.league_id`` (the configured default). An explicit override is
+    validated against the account's own leagues (``_get_my_leagues``) so we
+    never query a league the token shouldn't see — but if discovery is
+    unavailable (returns ``[]``) we skip validation rather than block.
 
     Attaches ``league_key`` as an attribute on the returned League so
     downstream helpers (e.g. ``_get_player_ownership``) can reference it
@@ -105,39 +149,67 @@ def _get_league(sc: OAuth2) -> yfa.League:
     it is None we construct the key from the current game id, which targets
     the current season automatically.
     """
+    target = league_id or cfg.league_id
+
+    # Validate an explicit, non-default override against the account's leagues.
+    if league_id is not None and target != cfg.league_id:
+        mine = _get_my_leagues(sc)
+        if mine and target not in {lg["league_id"] for lg in mine}:
+            available = ", ".join(
+                f'{lg["league_id"]} ({lg["name"]})' for lg in mine
+            )
+            raise ValueError(
+                f"League id {target!r} is not one of your leagues. "
+                f"Available: {available}. Use yahoo_list_my_leagues to see them."
+            )
+
     gm = yfa.Game(sc, cfg.sport)
     if cfg.season is not None:
         # Season pinned: find the league among that year's leagues.
         for lid in gm.league_ids(year=cfg.season):
-            if cfg.league_id in lid:
+            if target in lid:
                 lg = gm.to_league(lid)
                 lg.league_key = lid          # stash for later use
                 return lg
     # No season pinned (auto-detect current), or not found in the pinned
     # season: construct the key directly from the current game id.
     game_id = gm.game_id()
-    league_key = f"{game_id}.l.{cfg.league_id}"
+    league_key = f"{game_id}.l.{target}"
     lg = gm.to_league(league_key)
     lg.league_key = league_key           # stash for later use
     return lg
 
 
-# Cached scoring config — the league's categories don't change mid-season, so
-# fetch the settings once per process and reuse.
-_scoring_config: Optional[ScoringConfig] = None
+def _resolved_league_id(lg: yfa.League) -> str:
+    """The bare numeric league id from a League's attached ``league_key``.
+
+    Used in response payloads so a multi-league response self-identifies with
+    the league actually queried rather than the configured default.
+    """
+    key = str(getattr(lg, "league_key", "") or "")
+    return key.split(".l.")[-1] if ".l." in key else cfg.league_id
+
+
+# Cached scoring configs — a league's categories don't change mid-season, so
+# fetch the settings once per process and reuse. Keyed by league_key so that
+# multiple leagues don't clobber each other (a single league would inherit the
+# wrong category labels otherwise).
+_scoring_configs: dict[str, ScoringConfig] = {}
 
 
 def _get_scoring_config(sc: OAuth2, lg: yfa.League) -> ScoringConfig:
     """Return the league's ScoringConfig, fetching league settings once.
 
     Built from the raw ``league/{key}/settings`` response (yfa's
-    ``League.settings()`` drops ``stat_categories``). Degrades to
-    ``ScoringConfig.empty()`` if the call fails, so labeling falls back to raw
-    stat_ids and standings simply omit category ranks rather than erroring.
+    ``League.settings()`` drops ``stat_categories``). Cached per league_key.
+    Degrades to ``ScoringConfig.empty()`` if the call fails (and does not cache
+    the failure), so labeling falls back to raw stat_ids and standings simply
+    omit category ranks rather than erroring.
     """
-    global _scoring_config
-    if _scoring_config is not None:
-        return _scoring_config
+    key = str(getattr(lg, "league_key", "") or "")
+    cached = _scoring_configs.get(key)
+    if cached is not None:
+        return cached
     try:
         url = (
             f"https://fantasysports.yahooapis.com/fantasy/v2/"
@@ -148,11 +220,12 @@ def _get_scoring_config(sc: OAuth2, lg: yfa.League) -> ScoringConfig:
             logger.warning(f"Settings call returned {resp.status_code}; "
                            "using empty scoring config")
             return ScoringConfig.empty()
-        _scoring_config = build_scoring_config(resp.json())
+        scoring = build_scoring_config(resp.json())
     except Exception as e:
         logger.warning(f"Failed to build scoring config: {e}")
         return ScoringConfig.empty()
-    return _scoring_config
+    _scoring_configs[key] = scoring
+    return scoring
 
 
 def _format_player(player: dict) -> dict:
@@ -479,7 +552,7 @@ async def app_lifespan(server):
     """Initialize the Yahoo OAuth session and league on startup."""
     try:
         sc = _get_oauth_session()
-        lg = _get_league(sc)
+        lg = _get_league(sc, None)  # configured default league at startup
         logger.info(f"Connected to Yahoo Fantasy league {cfg.league_id}")
         yield {"sc": sc, "lg": lg}
     except Exception as e:
@@ -528,7 +601,7 @@ async def yahoo_get_roster(params: GetRosterInput) -> str:
     """
     try:
         sc = _get_oauth_session()
-        lg = _get_league(sc)
+        lg = _get_league(sc, params.league_id)
 
         teams = lg.teams()
 
@@ -601,7 +674,7 @@ async def yahoo_get_roster(params: GetRosterInput) -> str:
         "openWorldHint": True,
     },
 )
-async def yahoo_get_standings() -> str:
+async def yahoo_get_standings(params: GetStandingsInput) -> str:
     """Get current league standings including win-loss records and rankings.
 
     Returns all teams ranked by their current standing, each with a numeric
@@ -610,12 +683,16 @@ async def yahoo_get_standings() -> str:
     ``rank`` (ERA/WHIP ranked low-first). Category totals come from a separate
     Yahoo call; if it fails, standings still return without ``categories``.
 
+    Args:
+        params (GetStandingsInput): Validated input containing:
+            - league_id (Optional[str]): League override, or None for default.
+
     Returns:
         str: JSON array of teams sorted by standing.
     """
     try:
         sc = _get_oauth_session()
-        lg = _get_league(sc)
+        lg = _get_league(sc, params.league_id)
         standings = lg.standings()
 
         # Season category totals come from a separate teams/stats call; degrade
@@ -631,7 +708,7 @@ async def yahoo_get_standings() -> str:
             logger.warning(f"Could not fetch season category totals: {e}")
 
         result = {
-            "league_id": cfg.league_id,
+            "league_id": _resolved_league_id(lg),
             "team_count": len(standings),
             "standings": _parse_standings(standings, season_categories),
         }
@@ -665,13 +742,13 @@ async def yahoo_get_scoreboard(params: GetScoreboardInput) -> str:
     """
     try:
         sc = _get_oauth_session()
-        lg = _get_league(sc)
+        lg = _get_league(sc, params.league_id)
 
         week = params.week if params.week is not None else lg.current_week()
         scoreboard = lg.matchups(week=week)
 
         result = {
-            "league_id": cfg.league_id,
+            "league_id": _resolved_league_id(lg),
             "week": week,
             "matchups": _parse_scoreboard(scoreboard, _get_scoring_config(sc, lg)),
         }
@@ -723,7 +800,7 @@ async def yahoo_search_free_agents(params: SearchFreeAgentsInput) -> str:
     """
     try:
         sc = _get_oauth_session()
-        lg = _get_league(sc)
+        lg = _get_league(sc, params.league_id)
 
         # Bypass yahoo_fantasy_api.League.free_agents() — it only accepts
         # 'position' and silently drops sort/status. Go to the Yahoo
@@ -783,7 +860,7 @@ async def yahoo_get_player_stats(params: GetPlayerStatsInput) -> str:
     """
     try:
         sc = _get_oauth_session()
-        lg = _get_league(sc)
+        lg = _get_league(sc, params.league_id)
 
         # yahoo_fantasy_api's player search
         try:
@@ -877,7 +954,7 @@ async def yahoo_get_player_ownership(params: GetPlayerOwnershipInput) -> str:
     """
     try:
         sc = _get_oauth_session()
-        lg = _get_league(sc)
+        lg = _get_league(sc, params.league_id)
 
         # Find the player first
         try:
@@ -932,22 +1009,26 @@ async def yahoo_get_player_ownership(params: GetPlayerOwnershipInput) -> str:
         "openWorldHint": True,
     },
 )
-async def yahoo_get_league_settings() -> str:
+async def yahoo_get_league_settings(params: GetLeagueSettingsInput) -> str:
     """Get the league's configuration, rules, and scoring settings.
 
     Returns roster positions, stat categories, scoring type, number of teams,
     trade deadline, playoff settings, and other league rules.
+
+    Args:
+        params (GetLeagueSettingsInput): Validated input containing:
+            - league_id (Optional[str]): League override, or None for default.
 
     Returns:
         str: JSON object with complete league settings.
     """
     try:
         sc = _get_oauth_session()
-        lg = _get_league(sc)
+        lg = _get_league(sc, params.league_id)
         settings = lg.settings()
 
         return json.dumps({
-            "league_id": cfg.league_id,
+            "league_id": _resolved_league_id(lg),
             "settings": settings,
         }, indent=2, default=str)
 
@@ -981,7 +1062,7 @@ async def yahoo_get_matchup(params: GetMatchupInput) -> str:
     """
     try:
         sc = _get_oauth_session()
-        lg = _get_league(sc)
+        lg = _get_league(sc, params.league_id)
 
         teams = lg.teams()
 
@@ -1043,7 +1124,7 @@ async def yahoo_get_transactions(params: GetTransactionsInput) -> str:
     """
     try:
         sc = _get_oauth_session()
-        lg = _get_league(sc)
+        lg = _get_league(sc, params.league_id)
 
         # Build the transactions API URL
         url = (
@@ -1249,7 +1330,7 @@ async def yahoo_get_transactions(params: GetTransactionsInput) -> str:
             })
 
         return json.dumps({
-            "league_id": cfg.league_id,
+            "league_id": _resolved_league_id(lg),
             "filters": {
                 "types": [t.value for t in params.transaction_types]
                 if params.transaction_types else "all",
@@ -1273,18 +1354,22 @@ async def yahoo_get_transactions(params: GetTransactionsInput) -> str:
         "openWorldHint": True,
     },
 )
-async def yahoo_list_teams() -> str:
+async def yahoo_list_teams(params: ListTeamsInput) -> str:
     """List all teams in the league with their names, keys, and managers.
 
     Useful for finding team numbers to use with other tools like
     yahoo_get_roster or yahoo_get_matchup.
+
+    Args:
+        params (ListTeamsInput): Validated input containing:
+            - league_id (Optional[str]): League override, or None for default.
 
     Returns:
         str: JSON array of teams with number, name, key, and manager info.
     """
     try:
         sc = _get_oauth_session()
-        lg = _get_league(sc)
+        lg = _get_league(sc, params.league_id)
         teams = lg.teams()
 
         team_list = []
@@ -1308,9 +1393,52 @@ async def yahoo_list_teams() -> str:
         team_list.sort(key=lambda t: (t["team_number"] is None, t["team_number"]))
 
         return json.dumps({
-            "league_id": cfg.league_id,
+            "league_id": _resolved_league_id(lg),
             "team_count": len(team_list),
             "teams": team_list,
+        }, indent=2, default=str)
+
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool(
+    name="yahoo_list_my_leagues",
+    annotations={
+        "title": "List My Leagues",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def yahoo_list_my_leagues() -> str:
+    """List the Yahoo leagues the authenticated account belongs to.
+
+    Use this to discover the ``league_id`` values accepted by the other tools'
+    optional ``league_id`` parameter when you play in more than one league.
+    Each entry has the numeric ``league_id``, ``name``, ``season``, and an
+    ``is_default`` flag marking the league used when ``league_id`` is omitted.
+
+    Returns:
+        str: JSON object with ``default_league_id`` and a ``leagues`` list.
+    """
+    try:
+        sc = _get_oauth_session()
+        leagues = _get_my_leagues(sc)
+        out = [
+            {
+                "league_id": lg["league_id"],
+                "name": lg["name"],
+                "season": lg["season"],
+                "is_default": lg["league_id"] == cfg.league_id,
+            }
+            for lg in leagues
+        ]
+        return json.dumps({
+            "default_league_id": cfg.league_id,
+            "count": len(out),
+            "leagues": out,
         }, indent=2, default=str)
 
     except Exception as e:
@@ -1373,7 +1501,7 @@ async def yahoo_get_players_batch(params: GetPlayersBatchInput) -> str:
     """
     try:
         sc = _get_oauth_session()
-        lg = _get_league(sc)
+        lg = _get_league(sc, params.league_id)
 
         resolved: list = []
         unresolved: list = []
@@ -1495,7 +1623,7 @@ async def yahoo_get_player_notes(params: GetPlayerNotesInput) -> str:
     """
     try:
         sc = _get_oauth_session()
-        lg = _get_league(sc)
+        lg = _get_league(sc, params.league_id)
 
         key = _resolve_player_key(lg, params.player_name)
         if not key:
@@ -1592,7 +1720,9 @@ def analyze_matchup(team_number: str = "") -> str:
         "Summarize which scoring categories are being won, lost, and tied, with the "
         "current values and margins. Call out the closest categories and any that "
         "look effectively decided, then give the projected category score and a "
-        "sentence on where the matchup will be won or lost."
+        "sentence on where the matchup will be won or lost. "
+        "If I mention a specific league, call yahoo_list_my_leagues first and pass "
+        "the matching league_id to the tools."
     )
 
 
@@ -1610,7 +1740,9 @@ def waiver_help(team_number: str = "") -> str:
         "form (e.g. sort=SB for steals, sort=K for pitcher strikeouts, sort=HR for "
         "power).\n"
         "3. Recommend 3-5 available players who would most improve my weak "
-        "categories, each with a one-line rationale and their recent numbers."
+        "categories, each with a one-line rationale and their recent numbers.\n"
+        "If I mention a specific league, call yahoo_list_my_leagues first and pass "
+        "the matching league_id to every tool call."
     )
 
 

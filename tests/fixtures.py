@@ -230,3 +230,56 @@ SETTINGS_RAW = {
         ]
     }
 }
+
+
+# --- users/games/leagues?use_login=1 (account's leagues) -------------------
+# Source for _parse_my_leagues. Reproduces the real nesting: users ->
+# user[guid, games] -> games keyed "0".."N"+count -> game[meta, leagues] ->
+# leagues keyed "0".."N"+count -> league[meta_dict]. Two games (two seasons)
+# and three leagues total exercise multi-game walking, the count sentinels,
+# and season/code extraction.
+
+def _league_node(league_key, league_id, name, season, game_code="mlb"):
+    return {"league": [{
+        "league_key": league_key,
+        "league_id": league_id,
+        "name": name,
+        "season": season,
+        "game_code": game_code,
+        "scoring_type": "head",
+        "num_teams": 10,
+    }]}
+
+
+MY_LEAGUES_RAW = {
+    "fantasy_content": {
+        "users": {
+            "0": {
+                "user": [
+                    {"guid": "VXFKDXTYW7O5BKPQEA3VW45I2M"},
+                    {"games": {
+                        "0": {"game": [
+                            {"game_key": "469", "game_id": "469", "name": "Baseball",
+                             "code": "mlb", "season": "2026"},
+                            {"leagues": {
+                                "0": _league_node("469.l.1", "1", "Keeper Klassic", "2026"),
+                                "1": _league_node("469.l.2", "2", "Dynasty Dudes", "2026"),
+                                "count": 2,
+                            }},
+                        ]},
+                        "1": {"game": [
+                            {"game_key": "458", "game_id": "458", "name": "Baseball",
+                             "code": "mlb", "season": "2025"},
+                            {"leagues": {
+                                "0": _league_node("458.l.99", "99", "Last Year League", "2025"),
+                                "count": 1,
+                            }},
+                        ]},
+                        "count": 2,
+                    }},
+                ]
+            },
+            "count": 1,
+        }
+    }
+}

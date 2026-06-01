@@ -259,3 +259,43 @@ def test_resolve_team_key_none_returns_owned_team():
 def test_resolve_team_key_none_without_owner_falls_back_to_first():
     teams = {"469.l.1.t.3": {"name": "A"}, "469.l.1.t.9": {"name": "B"}}
     assert parsers._resolve_team_key(_FakeLeague(), teams, None) == "469.l.1.t.3"
+
+
+# --- account league discovery ----------------------------------------------
+
+def test_parse_my_leagues_walks_games_and_leagues():
+    leagues = parsers._parse_my_leagues(fx.MY_LEAGUES_RAW)
+    # Three leagues across two games (count sentinels skipped, not parsed).
+    assert [lg["league_id"] for lg in leagues] == ["1", "2", "99"]
+    by_id = {lg["league_id"]: lg for lg in leagues}
+    assert by_id["1"]["name"] == "Keeper Klassic"
+    assert by_id["1"]["league_key"] == "469.l.1"
+    assert by_id["1"]["season"] == "2026"
+    # Second game / season is reached too.
+    assert by_id["99"]["season"] == "2025"
+    assert by_id["99"]["league_key"] == "458.l.99"
+    assert all(lg["game_code"] == "mlb" for lg in leagues)
+
+
+def test_parse_my_leagues_empty_on_bad_shape():
+    assert parsers._parse_my_leagues({}) == []
+    assert parsers._parse_my_leagues({"fantasy_content": {"users": {"count": 0}}}) == []
+
+
+def test_parse_my_leagues_tolerates_dict_league_node():
+    # Some responses give `league` as a bare dict instead of [dict].
+    raw = {"fantasy_content": {"users": {"0": {"user": [
+        {"guid": "g"},
+        {"games": {"0": {"game": [
+            {"code": "mlb"},
+            {"leagues": {"0": {"league": {
+                "league_key": "469.l.7", "league_id": "7",
+                "name": "Solo", "season": "2026",
+            }}, "count": 1}},
+        ]}, "count": 1}},
+    ]}, "count": 1}}}
+    leagues = parsers._parse_my_leagues(raw)
+    assert len(leagues) == 1
+    assert leagues[0]["league_id"] == "7"
+    # game_code falls back to the game meta's `code` when absent on the league.
+    assert leagues[0]["game_code"] == "mlb"

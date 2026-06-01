@@ -463,3 +463,88 @@ def _resolve_team_key(lg, teams: dict, team_number: Optional[int]) -> Optional[s
     # Fallback: first team in the dict. Shouldn't happen in practice.
     keys = list(teams.keys())
     return keys[0] if keys else None
+
+
+def _parse_my_leagues(raw: dict) -> list[dict]:
+    """Parse the ``users/games/leagues?use_login=1`` response into a flat list.
+
+    Yahoo nests this several collections deep, each keyed by numeric strings
+    plus a ``count``: ``fantasy_content.users.{u}.user[1].games.{g}.game[1]``
+    ``.leagues.{l}.league[0]``. We walk by key/shape (never fixed index),
+    skip ``count`` sentinels, and tolerate the ``league`` node arriving as
+    either a single dict or a one-element list. The game ``code`` (e.g.
+    ``mlb``) lives on the game meta alongside the ``leagues`` block, so we
+    capture it as a fallback for each league's ``game_code``.
+
+    Returns one dict per league: ``league_id`` (bare numeric id, as a string),
+    ``league_key`` (``{game}.l.{id}``), ``name``, ``season``, ``game_code``.
+    Returns ``[]`` on an unexpected/empty shape rather than raising, so the
+    discovery call can degrade gracefully.
+    """
+    out: list[dict] = []
+    fc = raw.get("fantasy_content", {}) if isinstance(raw, dict) else {}
+    users = fc.get("users", {}) if isinstance(fc, dict) else {}
+    if not isinstance(users, dict):
+        return out
+
+    for ukey, uval in users.items():
+        if ukey == "count" or not isinstance(uval, dict):
+            continue
+        user = uval.get("user")
+        if not isinstance(user, list):
+            continue
+        # The user node interleaves a {guid} dict with a {games: ...} dict.
+        games = next(
+            (s["games"] for s in user
+             if isinstance(s, dict) and isinstance(s.get("games"), dict)),
+            None,
+        )
+        if games is None:
+            continue
+
+        for gkey, gval in games.items():
+            if gkey == "count" or not isinstance(gval, dict):
+                continue
+            game = gval.get("game")
+            if not isinstance(game, list):
+                continue
+            # The game meta (with `code`) and the `leagues` block are separate
+            # sections of the same positional array.
+            game_code = None
+            leagues = None
+            for section in game:
+                if not isinstance(section, dict):
+                    continue
+                if game_code is None and section.get("code"):
+                    game_code = section["code"]
+                if isinstance(section.get("leagues"), dict):
+                    leagues = section["leagues"]
+            if leagues is None:
+                continue
+
+            for lkey, lval in leagues.items():
+                if lkey == "count" or not isinstance(lval, dict):
+                    continue
+                league = lval.get("league")
+                # Yahoo returns this as [meta_dict] or, occasionally, meta_dict.
+                lmeta = None
+                if isinstance(league, list):
+                    lmeta = next(
+                        (it for it in league
+                         if isinstance(it, dict) and it.get("league_id")),
+                        None,
+                    )
+                elif isinstance(league, dict):
+                    lmeta = league
+                if not isinstance(lmeta, dict) or lmeta.get("league_id") is None:
+                    continue
+
+                season = lmeta.get("season")
+                out.append({
+                    "league_id": str(lmeta["league_id"]),
+                    "league_key": lmeta.get("league_key", ""),
+                    "name": lmeta.get("name", ""),
+                    "season": str(season) if season is not None else "",
+                    "game_code": lmeta.get("game_code") or game_code or "",
+                })
+    return out

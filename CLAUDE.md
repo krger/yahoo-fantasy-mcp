@@ -22,9 +22,9 @@ schemas stay declarative, config stays env-only, and the Yahoo client + tool
 wiring stay in `server.py`.
 
 - `server.py` — main server and entrypoint: MCP tool definitions, the Yahoo client, OAuth/token handling, free-agent request-building (`_resolve_sort`, `_fetch_free_agents_raw`), `_format_player`, and the `_handle_error` formatter.
-- `config.py` — runtime configuration loaded from environment variables (`load_config()` → a frozen `Config` dataclass). `server.py` calls it once at import (`cfg = load_config()`) so misconfiguration fails loudly at startup. `YAHOO_LEAGUE_ID` is **required** (no default — a fork must set its own); `YAHOO_SPORT` defaults `mlb`; `YAHOO_SEASON` is optional (auto-detects the current season when unset); `YAHOO_OAUTH_FILE` overrides the creds path.
-- `yahoo_parsers.py` — the pure Yahoo response parsers/normalizers (no network, no OAuth, no MCP): `_to_int`/`_to_number`, `_flatten_raw_yahoo_player`, `_extract_team_summary`, `_parse_matchup_node`, `_parse_matchup`, `_parse_scoreboard`, `_parse_team_season_stats`, `_rank_season_categories`, `_parse_standings`, and `_resolve_team_key`. Scoring categories are **not** hard-coded: `build_scoring_config()` derives a `ScoringConfig` (labels, scored stat_ids in display order, lower-is-better set) from the league's own `settings` response, and the labeling/ranking parsers take that config as an argument — so the server adapts to any league's categories. This is the unit-test target (the repo's main source of bugs); `server.py` imports from it.
-- `schemas.py` — the Pydantic input models (`GetRosterInput`, `SearchFreeAgentsInput`, `GetMatchupInput`, the `TransactionType` enum, etc.): the MCP tools' input contract. FastMCP turns these into the JSON schema advertised to clients, so class/field names are part of the public contract — renaming is a breaking change. `server.py` imports the models it annotates handlers with.
+- `config.py` — runtime configuration loaded from environment variables (`load_config()` → a frozen `Config` dataclass). `server.py` calls it once at import (`cfg = load_config()`) so misconfiguration fails loudly at startup. `YAHOO_LEAGUE_ID` is **required** (no default — a fork must set its own) and serves as the **default** league; tools also accept a per-call `league_id` override (see below). `YAHOO_SPORT` defaults `mlb`; `YAHOO_SEASON` is optional (auto-detects the current season when unset); `YAHOO_OAUTH_FILE` overrides the creds path.
+- `yahoo_parsers.py` — the pure Yahoo response parsers/normalizers (no network, no OAuth, no MCP): `_to_int`/`_to_number`, `_flatten_raw_yahoo_player`, `_extract_team_summary`, `_parse_matchup_node`, `_parse_matchup`, `_parse_scoreboard`, `_parse_team_season_stats`, `_rank_season_categories`, `_parse_standings`, `_resolve_team_key`, and `_parse_my_leagues` (flattens the `users/games/leagues` response into the account's `{league_id, league_key, name, season, game_code}` list). Scoring categories are **not** hard-coded: `build_scoring_config()` derives a `ScoringConfig` (labels, scored stat_ids in display order, lower-is-better set) from the league's own `settings` response, and the labeling/ranking parsers take that config as an argument — so the server adapts to any league's categories. This is the unit-test target (the repo's main source of bugs); `server.py` imports from it.
+- `schemas.py` — the Pydantic input models (`GetRosterInput`, `SearchFreeAgentsInput`, `GetMatchupInput`, the `TransactionType` enum, etc.): the MCP tools' input contract. They share a `LeagueScopedInput` base carrying the optional `league_id` override, so every league-scoped tool advertises it identically (the otherwise-argument-less tools — standings, settings, list-teams — get `GetStandingsInput`/`GetLeagueSettingsInput`/`ListTeamsInput`, which add nothing but that field). FastMCP turns these into the JSON schema advertised to clients, so class/field names are part of the public contract — renaming is a breaking change. `server.py` imports the models it annotates handlers with.
 - **Yahoo OAuth credentials** load from `oauth2.json` in the repo root (override the path with the `YAHOO_OAUTH_FILE` env var). The file holds the `consumer_key`/`consumer_secret` plus the access + refresh tokens; `yahoo_oauth.OAuth2` refreshes the access token automatically when expired (`_get_oauth_session`). It is **gitignored and must never be committed.** Other config comes from env vars via `config.py`: `YAHOO_LEAGUE_ID` is required, `YAHOO_SPORT`/`YAHOO_SEASON`/`YAHOO_OAUTH_FILE` are optional.
 
 ## Running locally
@@ -52,14 +52,17 @@ Ruff config lives in `pyproject.toml` (`[tool.ruff]`): defaults (pyflakes `F`
 CI runs `ruff check` before pytest.
 
 `tests/fixtures.py` holds minimal Yahoo responses reproducing the positional
-quirks (including `SETTINGS_RAW` for `build_scoring_config`); `tests/test_parsers.py`
-covers `build_scoring_config` (label/scored/lower-is-better derivation + empty
-fallback), `_to_int`/`_to_number`, `_extract_team_summary`, `_parse_matchup_node`
-(both framings), `_parse_matchup`, `_parse_scoreboard`, `_parse_team_season_stats`,
-`_rank_season_categories` (ranking direction + ties), `_parse_standings`,
-`_flatten_raw_yahoo_player`, and `_resolve_team_key` — all imported from
-`yahoo_parsers` (the test imports that module directly, not `server`). **Add a
-case here when you touch a parser** — especially new stat_ids or response shapes.
+quirks (including `SETTINGS_RAW` for `build_scoring_config` and `MY_LEAGUES_RAW`,
+a multi-game/multi-league `users/games/leagues` response for `_parse_my_leagues`);
+`tests/test_parsers.py` covers `build_scoring_config` (label/scored/lower-is-better
+derivation + empty fallback), `_to_int`/`_to_number`, `_extract_team_summary`,
+`_parse_matchup_node` (both framings), `_parse_matchup`, `_parse_scoreboard`,
+`_parse_team_season_stats`, `_rank_season_categories` (ranking direction + ties),
+`_parse_standings`, `_flatten_raw_yahoo_player`, `_resolve_team_key`, and
+`_parse_my_leagues` (multi-league walk, empty fallback, dict-vs-list league node)
+— all imported from `yahoo_parsers` (the test imports that module directly, not
+`server`). **Add a case here when you touch a parser** — especially new stat_ids
+or response shapes.
 
 Automated tests don't hit Yahoo, so there's still no substitute for exercising
 the actual tools against the live league for anything API-facing. After a
@@ -77,6 +80,9 @@ Deploys are manual and intentional — CI (`.github/workflows/test.yml`) **only 
 
 Keep tool names and input schemas stable — they are the server's public contract with MCP clients. Renaming a tool or changing a parameter is a breaking change.
 
+**Multi-league:** every league-scoped tool takes an optional `league_id` (the bare numeric id) to target a league other than the configured default (`cfg.league_id`). `_get_league(sc, league_id)` resolves it and validates any explicit override against the account's own leagues (`_get_my_leagues` → `_parse_my_leagues`, cached per process), raising a clear error for a league the token can't see; if discovery is unavailable it degrades permissive rather than blocking. Response payloads echo the *resolved* league via `_resolved_league_id(lg)`, and the scoring-config cache (`_scoring_configs`) is keyed by `league_key` so leagues don't clobber each other's category labels.
+
+- `yahoo_list_my_leagues` — the leagues the authenticated account belongs to (`league_id`, `name`, `season`, `is_default`), plus `default_league_id`. Use it to discover the ids accepted by the other tools' `league_id` parameter.
 - `yahoo_list_teams` — list all teams (numbers, keys, managers)
 - `yahoo_get_standings` — league standings. Returns `standings` as a normalized list (via `_parse_standings`): each team has numeric `rank`, `playoff_seed`, a structured `record` (`wins`/`losses`/`ties`/`pct`), `games_back` (`null` for the leader), and a `categories` list of season totals for the scoring categories, each with the team's league `rank` in that category (rate stats like ERA/WHIP ranked low-first). The standings feed itself has no category stats; they come from a separate `league/{key}/teams/stats` call that degrades gracefully (standings still return without `categories` if it fails).
 - `yahoo_get_scoreboard` — all matchups for a week. Returns `matchups` as a list of parsed breakdowns (same core parser as `yahoo_get_matchup`, neutral framing): each has matchup meta, a `teams` list (`name`, `team_key`, `category_points`), and a `categories` list where each entry carries per-stat `values` keyed by `team_key`, the winning `team_key` (or `"tie"`/`null` for informational stats), and a `scored` flag. `week` is resolved to the numeric current week when omitted.

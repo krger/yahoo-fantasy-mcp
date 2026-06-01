@@ -5,7 +5,10 @@ personal defaults baked into the code, so a fork must set its own
 ``YAHOO_LEAGUE_ID`` rather than silently querying someone else's league.
 
 Environment variables:
-    YAHOO_LEAGUE_ID  (required) Yahoo league id, e.g. "12345".
+    YAHOO_LEAGUE_ID  (required) Yahoo league id, e.g. "12345". This is the
+                     *default* league; tools also accept a per-call
+                     ``league_id`` override for accounts in multiple leagues
+                     (validated against the account's own leagues).
     YAHOO_SPORT      (optional) Yahoo game code; default "mlb".
     YAHOO_SEASON     (optional) Season year, e.g. "2026". If unset, the
                      current season is auto-detected at runtime.
