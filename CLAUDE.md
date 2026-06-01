@@ -76,6 +76,8 @@ change:
 
 Deploys are manual and intentional — CI (`.github/workflows/test.yml`) **only lints and tests; it never deploys.** The server is a long-running streamable-HTTP process (`python server.py`); run it under a process manager (e.g. systemd) behind a TLS-terminating proxy/tunnel. The maintainer's environment-specific runbook is in `CLAUDE.local.md` (gitignored).
 
+**Multi-league:** `YAHOO_LEAGUE_ID` sets only the *default* league. Targeting another league the authenticated account already belongs to needs **no redeploy or config change** — clients pass a per-call `league_id` (see "Tools exposed"), validated against the account's own leagues. Only changing the *default* requires updating the env var (and a restart).
+
 ## Tools exposed
 
 Keep tool names and input schemas stable — they are the server's public contract with MCP clients. Renaming a tool or changing a parameter is a breaking change.
