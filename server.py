@@ -91,6 +91,36 @@ logger = logging.getLogger("yahoo_fantasy_mcp")
 # Yahoo API helpers
 # ---------------------------------------------------------------------------
 
+# Warn at most once per process about loose credential-file permissions, so
+# the check (run from the per-request _get_oauth_session) doesn't spam the log.
+_oauth_perms_checked = False
+
+
+def _warn_if_oauth_file_loose() -> None:
+    """Warn once if the OAuth credentials file is group/world-accessible.
+
+    ``oauth2.json`` holds the consumer secret and refresh token; it should be
+    ``0600``. This is defense-in-depth only — we warn rather than fail so a
+    slightly-loose mode doesn't take the server down. POSIX-only; permission
+    bits are not meaningful on Windows.
+    """
+    global _oauth_perms_checked
+    if _oauth_perms_checked:
+        return
+    _oauth_perms_checked = True
+    try:
+        mode = os.stat(cfg.oauth_file).st_mode
+    except OSError:
+        return
+    if mode & 0o077:
+        logger.warning(
+            "OAuth credentials file %s is group/world-accessible (mode %03o); "
+            "it holds the consumer secret and refresh token. Tighten it with: "
+            "chmod 600 %s",
+            cfg.oauth_file, mode & 0o777, cfg.oauth_file,
+        )
+
+
 def _get_oauth_session() -> OAuth2:
     """Create or refresh an OAuth2 session from the credentials file."""
     if not os.path.exists(cfg.oauth_file):
@@ -98,6 +128,7 @@ def _get_oauth_session() -> OAuth2:
             f"OAuth credentials file not found at {cfg.oauth_file}. "
             "Create oauth2.json with your consumer_key and consumer_secret."
         )
+    _warn_if_oauth_file_loose()
     sc = OAuth2(None, None, from_file=cfg.oauth_file)
     if not sc.token_is_valid():
         sc.refresh_access_token()
