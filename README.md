@@ -108,7 +108,7 @@ This is a streamable-HTTP server (not stdio). Start it from the repo root:
 YAHOO_LEAGUE_ID=YOUR_LEAGUE_ID uv run python server.py
 ```
 
-It listens on `0.0.0.0:8000` and serves MCP at **`http://localhost:8000/mcp`**.
+It listens on `127.0.0.1:8000` (loopback only) and serves MCP at **`http://localhost:8000/mcp`**.
 (See [Environment Variables](#environment-variables) for the other settings.)
 
 The server itself does **no authentication** — it trusts whatever reaches it.

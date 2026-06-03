@@ -34,7 +34,7 @@ wiring stay in `server.py`.
 YAHOO_LEAGUE_ID=<your-league-id> python server.py
 ```
 
-This launches the streamable-HTTP server (uvicorn) on `0.0.0.0:8000`, serving MCP at `/mcp`. **`YAHOO_LEAGUE_ID` is required** — the server exits at startup without it (no baked-in default). Optionally set `YAHOO_SPORT`, `YAHOO_SEASON`, or `YAHOO_OAUTH_FILE`. The server does no authentication of its own; for non-local use, front it with a TLS-terminating reverse proxy or tunnel that enforces access control.
+This launches the streamable-HTTP server (uvicorn) on `127.0.0.1:8000` (loopback only), serving MCP at `/mcp`. **`YAHOO_LEAGUE_ID` is required** — the server exits at startup without it (no baked-in default). Optionally set `YAHOO_SPORT`, `YAHOO_SEASON`, or `YAHOO_OAUTH_FILE`. The server does no authentication of its own; for non-local use, front it with a TLS-terminating reverse proxy or tunnel that enforces access control.
 
 ## Testing / verifying changes
 
