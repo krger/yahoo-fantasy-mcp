@@ -1790,4 +1790,8 @@ if __name__ == "__main__":
 
     # The transport validates the Host header itself (see _transport_security);
     # any forwarded public hostname must be listed in MCP_ALLOWED_HOSTS.
-    uvicorn.run(mcp.streamable_http_app(), host="0.0.0.0", port=8000)
+    #
+    # Bind loopback only: the server has no auth of its own (edge auth fronts
+    # it) and the reverse proxy/tunnel connects over localhost, so there is no
+    # reason to expose the port on other interfaces.
+    uvicorn.run(mcp.streamable_http_app(), host="127.0.0.1", port=8000)
