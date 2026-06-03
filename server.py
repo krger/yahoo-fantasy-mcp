@@ -32,6 +32,7 @@ from urllib.parse import quote
 
 import yahoo_fantasy_api as yfa
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from yahoo_oauth import OAuth2
 
 from config import load_config
@@ -90,6 +91,36 @@ logger = logging.getLogger("yahoo_fantasy_mcp")
 # Yahoo API helpers
 # ---------------------------------------------------------------------------
 
+# Warn at most once per process about loose credential-file permissions, so
+# the check (run from the per-request _get_oauth_session) doesn't spam the log.
+_oauth_perms_checked = False
+
+
+def _warn_if_oauth_file_loose() -> None:
+    """Warn once if the OAuth credentials file is group/world-accessible.
+
+    ``oauth2.json`` holds the consumer secret and refresh token; it should be
+    ``0600``. This is defense-in-depth only — we warn rather than fail so a
+    slightly-loose mode doesn't take the server down. POSIX-only; permission
+    bits are not meaningful on Windows.
+    """
+    global _oauth_perms_checked
+    if _oauth_perms_checked:
+        return
+    _oauth_perms_checked = True
+    try:
+        mode = os.stat(cfg.oauth_file).st_mode
+    except OSError:
+        return
+    if mode & 0o077:
+        logger.warning(
+            "OAuth credentials file %s is group/world-accessible (mode %03o); "
+            "it holds the consumer secret and refresh token. Tighten it with: "
+            "chmod 600 %s",
+            cfg.oauth_file, mode & 0o777, cfg.oauth_file,
+        )
+
+
 def _get_oauth_session() -> OAuth2:
     """Create or refresh an OAuth2 session from the credentials file."""
     if not os.path.exists(cfg.oauth_file):
@@ -97,6 +128,7 @@ def _get_oauth_session() -> OAuth2:
             f"OAuth credentials file not found at {cfg.oauth_file}. "
             "Create oauth2.json with your consumer_key and consumer_secret."
         )
+    _warn_if_oauth_file_loose()
     sc = OAuth2(None, None, from_file=cfg.oauth_file)
     if not sc.token_is_valid():
         sc.refresh_access_token()
@@ -564,7 +596,29 @@ async def app_lifespan(server):
 # MCP Server
 # ---------------------------------------------------------------------------
 
-mcp = FastMCP("yahoo_fantasy_mcp", lifespan=app_lifespan)
+# DNS-rebinding protection for the streamable-HTTP transport. The MCP library
+# auto-enables a loopback-only allowlist when transport_security is omitted; we
+# pass an explicit one only when MCP_ALLOWED_HOSTS adds deployment-specific
+# hostnames (e.g. the public name a reverse proxy/tunnel forwards). Loopback
+# hosts/origins are always included so local access (the documented healthcheck,
+# local dev) keeps working; an unset MCP_ALLOWED_HOSTS leaves the stock
+# behavior. The deployment's hostname lives in the environment, not the repo.
+_LOOPBACK_HOSTS = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+_LOOPBACK_ORIGINS = ["http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"]
+
+_transport_security: Optional[TransportSecuritySettings] = None
+if cfg.allowed_hosts:
+    _transport_security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=_LOOPBACK_HOSTS + list(cfg.allowed_hosts),
+        allowed_origins=_LOOPBACK_ORIGINS,
+    )
+
+mcp = FastMCP(
+    "yahoo_fantasy_mcp",
+    lifespan=app_lifespan,
+    transport_security=_transport_security,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1762,22 +1816,13 @@ def weekly_recap() -> str:
 # Entry point
 # ---------------------------------------------------------------------------
 
-class RewriteHostMiddleware:
-    """Rewrite the Host header to localhost so the MCP SSE transport
-    accepts requests arriving via Cloudflare Tunnel."""
-    def __init__(self, app):
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] == "http":
-            scope = dict(scope, headers=[
-                (b"host", b"localhost:8000") if name == b"host" else (name, value)
-                for name, value in scope["headers"]
-            ])
-        await self.app(scope, receive, send)
-
-
 if __name__ == "__main__":
     import uvicorn
-    app = RewriteHostMiddleware(mcp.streamable_http_app())
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+    # The transport validates the Host header itself (see _transport_security);
+    # any forwarded public hostname must be listed in MCP_ALLOWED_HOSTS.
+    #
+    # Bind loopback only: the server has no auth of its own (edge auth fronts
+    # it) and the reverse proxy/tunnel connects over localhost, so there is no
+    # reason to expose the port on other interfaces.
+    uvicorn.run(mcp.streamable_http_app(), host="127.0.0.1", port=8000)

@@ -14,6 +14,14 @@ Environment variables:
                      current season is auto-detected at runtime.
     YAHOO_OAUTH_FILE (optional) Path to the OAuth credentials JSON;
                      default "oauth2.json" in the repo root.
+    MCP_ALLOWED_HOSTS (optional) Comma-separated Host header values the MCP
+                     transport's DNS-rebinding protection should accept, in
+                     addition to the always-allowed loopback hosts. Set this
+                     when serving behind a reverse proxy/tunnel that forwards a
+                     non-loopback Host (e.g. "example.com,example.com:*"). Unset
+                     keeps the stock loopback-only behavior. The value is
+                     deployment-specific, so it lives in the environment rather
+                     than in the repo.
 """
 
 import os
@@ -27,6 +35,7 @@ class Config:
     sport: str = "mlb"
     season: int | None = None          # None -> resolve current season at runtime
     oauth_file: str = "oauth2.json"
+    allowed_hosts: tuple[str, ...] = ()  # extra Host values for DNS-rebinding allowlist
 
 
 def load_config() -> Config:
@@ -53,9 +62,20 @@ def load_config() -> Config:
     default_oauth = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "oauth2.json"
     )
+
+    # Extra Host header values to accept (beyond loopback) when fronted by a
+    # reverse proxy/tunnel that forwards a non-loopback Host. Comma-separated;
+    # blanks trimmed. Empty -> stock loopback-only DNS-rebinding protection.
+    allowed_hosts = tuple(
+        h.strip()
+        for h in os.environ.get("MCP_ALLOWED_HOSTS", "").split(",")
+        if h.strip()
+    )
+
     return Config(
         league_id=league_id,
         sport=os.environ.get("YAHOO_SPORT", "mlb"),
         season=season,
         oauth_file=os.environ.get("YAHOO_OAUTH_FILE", default_oauth),
+        allowed_hosts=allowed_hosts,
     )
