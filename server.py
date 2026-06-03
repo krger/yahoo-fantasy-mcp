@@ -32,6 +32,7 @@ from urllib.parse import quote
 
 import yahoo_fantasy_api as yfa
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from yahoo_oauth import OAuth2
 
 from config import load_config
@@ -564,7 +565,29 @@ async def app_lifespan(server):
 # MCP Server
 # ---------------------------------------------------------------------------
 
-mcp = FastMCP("yahoo_fantasy_mcp", lifespan=app_lifespan)
+# DNS-rebinding protection for the streamable-HTTP transport. The MCP library
+# auto-enables a loopback-only allowlist when transport_security is omitted; we
+# pass an explicit one only when MCP_ALLOWED_HOSTS adds deployment-specific
+# hostnames (e.g. the public name a reverse proxy/tunnel forwards). Loopback
+# hosts/origins are always included so local access (the documented healthcheck,
+# local dev) keeps working; an unset MCP_ALLOWED_HOSTS leaves the stock
+# behavior. The deployment's hostname lives in the environment, not the repo.
+_LOOPBACK_HOSTS = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+_LOOPBACK_ORIGINS = ["http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"]
+
+_transport_security: Optional[TransportSecuritySettings] = None
+if cfg.allowed_hosts:
+    _transport_security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=_LOOPBACK_HOSTS + list(cfg.allowed_hosts),
+        allowed_origins=_LOOPBACK_ORIGINS,
+    )
+
+mcp = FastMCP(
+    "yahoo_fantasy_mcp",
+    lifespan=app_lifespan,
+    transport_security=_transport_security,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1762,22 +1785,9 @@ def weekly_recap() -> str:
 # Entry point
 # ---------------------------------------------------------------------------
 
-class RewriteHostMiddleware:
-    """Rewrite the Host header to localhost so the MCP SSE transport
-    accepts requests arriving via Cloudflare Tunnel."""
-    def __init__(self, app):
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] == "http":
-            scope = dict(scope, headers=[
-                (b"host", b"localhost:8000") if name == b"host" else (name, value)
-                for name, value in scope["headers"]
-            ])
-        await self.app(scope, receive, send)
-
-
 if __name__ == "__main__":
     import uvicorn
-    app = RewriteHostMiddleware(mcp.streamable_http_app())
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+    # The transport validates the Host header itself (see _transport_security);
+    # any forwarded public hostname must be listed in MCP_ALLOWED_HOSTS.
+    uvicorn.run(mcp.streamable_http_app(), host="0.0.0.0", port=8000)
