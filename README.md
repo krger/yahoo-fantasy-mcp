@@ -68,8 +68,9 @@ uv pip install "mcp[cli]>=1.2.0" yahoo_fantasy_api yahoo_oauth
 Create a Yahoo app at <https://developer.yahoo.com/apps/create/>:
 
 - **Application Type:** Confidential Client.
-- **API Permissions:** enable **Fantasy Sports → Read** (or Read/Write if you
-  ever want roster moves).
+- **API Permissions:** enable **Fantasy Sports → Read**. Yahoo only offers
+  read-only access for Fantasy Sports — there is no Read/Write option, so
+  roster moves through the API aren't possible.
 - **Redirect URI(s):** an `https://` URL **on a domain you control**. Yahoo
   rejects `localhost` and no longer supports the out-of-band (`oob`) flow, so
   use a real domain — it doesn't have to actually serve anything (e.g. your
