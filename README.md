@@ -49,19 +49,16 @@ Restart your terminal after installing.
 
 ### 2. Install dependencies
 
-From the `yahoo-fantasy-mcp` directory:
+From the `yahoo-fantasy-mcp` directory, sync the pinned dependencies from the
+lockfile:
 
 ```bash
-uv venv
-uv pip install -e .
+uv sync
 ```
 
-Or if you prefer to just install the deps directly:
-
-```bash
-uv venv
-uv pip install "mcp[cli]>=1.2.0" yahoo_fantasy_api yahoo_oauth
-```
+This creates a `.venv/` and installs the exact versions in `uv.lock`, so you get
+a reproducible environment. For a runtime-only install (no test/lint tooling),
+add `--no-dev`.
 
 ### 3. Get Yahoo credentials and authenticate (one-time)
 
