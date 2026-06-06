@@ -1,5 +1,6 @@
 oauth2.json
 CLAUDE.local.md
+.claude/
 
 # Python / test / build artifacts
 __pycache__/
