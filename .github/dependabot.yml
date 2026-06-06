@@ -1,0 +1,21 @@
+version: 2
+updates:
+  # Python dependencies, resolved from uv.lock
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      # One PR per week for routine non-major bumps; majors stay separate
+      # so they get individual review (CI runs uv sync --locked + pytest).
+      python-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Keep the CI workflow's pinned actions current
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
