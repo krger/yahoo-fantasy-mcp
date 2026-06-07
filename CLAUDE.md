@@ -49,7 +49,18 @@ uv run ruff check --fix .   # auto-fix the fixable ones
 
 Ruff config lives in `pyproject.toml` (`[tool.ruff]`): defaults (pyflakes `F`
 + `E4/E7/E9`) plus `I` for import sorting, targeting py3.13. Keep it green —
-CI runs `ruff check` before pytest.
+CI runs `ruff check`, then pytest, then a `pip-audit` dependency scan.
+
+The audit step exports the locked **production** tree (`uv export --no-dev
+--no-emit-project`) and runs `pip-audit` on it, so a published advisory against
+a pinned dependency **fails the build** rather than waiting on a Dependabot
+bump. It complements Dependabot (which bumps versions) with active CVE scanning
+at PR/push time. Reproduce it locally with:
+
+```
+uv export --frozen --no-dev --no-emit-project --no-hashes --format requirements-txt -o requirements-audit.txt
+uvx pip-audit -r requirements-audit.txt
+```
 
 `tests/fixtures.py` holds minimal Yahoo responses reproducing the positional
 quirks (including `SETTINGS_RAW` for `build_scoring_config` and `MY_LEAGUES_RAW`,
@@ -74,7 +85,7 @@ change:
 
 ## Deployment
 
-Deploys are manual and intentional — CI (`.github/workflows/test.yml`) **only lints and tests; it never deploys.** The server is a long-running streamable-HTTP process (`python server.py`); run it under a process manager (e.g. systemd) behind a TLS-terminating proxy/tunnel. The maintainer's environment-specific runbook is in `CLAUDE.local.md` (gitignored).
+Deploys are manual and intentional — CI (`.github/workflows/test.yml`) **only lints, tests, and audits dependencies; it never deploys.** The server is a long-running streamable-HTTP process (`python server.py`); run it under a process manager (e.g. systemd) behind a TLS-terminating proxy/tunnel. The maintainer's environment-specific runbook is in `CLAUDE.local.md` (gitignored).
 
 **Multi-league:** `YAHOO_LEAGUE_ID` sets only the *default* league. Targeting another league the authenticated account already belongs to needs **no redeploy or config change** — clients pass a per-call `league_id` (see "Tools exposed"), validated against the account's own leagues. Only changing the *default* requires updating the env var (and a restart).
 
