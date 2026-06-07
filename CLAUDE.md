@@ -9,7 +9,7 @@ Guidance for Claude Code when working in this repository. Keep this file current
 This is a **Model Context Protocol (MCP) server** that exposes Yahoo Fantasy Baseball data and roster operations as tools. It is written in **Python** and serves a **remote MCP endpoint over streamable HTTP** at the `/mcp` path.
 
 - **Upstream API:** Yahoo Fantasy Sports API (OAuth2). The server holds a Yahoo refresh token and mints access tokens to call Yahoo.
-- **Python version:** requires `>=3.10` (`pyproject.toml`); CI pins **3.13**. Avoid relying on syntax/stdlib newer than 3.13.
+- **Python version:** requires `>=3.13` (`pyproject.toml`), matching CI and the deploy host; avoid relying on syntax/stdlib newer than 3.13.
 - **Dependency management:** `uv`
 
 ## Key files
