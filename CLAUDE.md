@@ -1,12 +1,18 @@
 # CLAUDE.md
 
-Guidance for Claude Code when working in this repository. Keep this file current — when behavior, structure, or conventions change, update this file in the same commit.
+Guidance for Claude Code when working in this repository. Keep this file
+current — when behavior, structure, or conventions change, update this file in
+the same commit.
 
-> Maintainer note: environment-specific deployment details and league facts live in a local, gitignored `CLAUDE.local.md` (auto-loaded alongside this file), not in the public repo.
+> Maintainer note: environment-specific deployment details and league facts
+> live in a local, gitignored `CLAUDE.local.md` (auto-loaded alongside this
+> file), not in the public repo.
 
 ## Project overview
 
-This is a **Model Context Protocol (MCP) server** that exposes Yahoo Fantasy Baseball data and roster operations as tools. It is written in **Python** and serves a **remote MCP endpoint over streamable HTTP** at the `/mcp` path.
+This is a **Model Context Protocol (MCP) server** that exposes Yahoo Fantasy
+Baseball data and roster operations as tools. It is written in **Python** and
+serves a **remote MCP endpoint over streamable HTTP** at the `/mcp` path.
 
 - **Upstream API:** Yahoo Fantasy Sports API (OAuth2). The server holds a Yahoo refresh token and mints access tokens to call Yahoo.
 - **Python version:** requires `>=3.13` (`pyproject.toml`), matching CI and the deploy host; avoid relying on syntax/stdlib newer than 3.13.
@@ -34,7 +40,12 @@ wiring stay in `server.py`.
 YAHOO_LEAGUE_ID=<your-league-id> python server.py
 ```
 
-This launches the streamable-HTTP server (uvicorn) on `127.0.0.1:8000` (loopback only), serving MCP at `/mcp`. **`YAHOO_LEAGUE_ID` is required** — the server exits at startup without it (no baked-in default). Optionally set `YAHOO_SPORT`, `YAHOO_SEASON`, or `YAHOO_OAUTH_FILE`. The server does no authentication of its own; for non-local use, front it with a TLS-terminating reverse proxy or tunnel that enforces access control.
+This launches the streamable-HTTP server (uvicorn) on `127.0.0.1:8000`
+(loopback only), serving MCP at `/mcp`. **`YAHOO_LEAGUE_ID` is required** — the
+server exits at startup without it (no baked-in default). Optionally set
+`YAHOO_SPORT`, `YAHOO_SEASON`, or `YAHOO_OAUTH_FILE`. The server does no
+authentication of its own; for non-local use, front it with a TLS-terminating
+reverse proxy or tunnel that enforces access control.
 
 ## Testing / verifying changes
 
@@ -85,15 +96,33 @@ change:
 
 ## Deployment
 
-Deploys are manual and intentional — CI (`.github/workflows/test.yml`) **only lints, tests, and audits dependencies; it never deploys.** The server is a long-running streamable-HTTP process (`python server.py`); run it under a process manager (e.g. systemd) behind a TLS-terminating proxy/tunnel. The maintainer's environment-specific runbook is in `CLAUDE.local.md` (gitignored).
+Deploys are manual and intentional — CI (`.github/workflows/test.yml`) **only
+lints, tests, and audits dependencies; it never deploys.** The server is a
+long-running streamable-HTTP process (`python server.py`); run it under a
+process manager (e.g. systemd) behind a TLS-terminating proxy/tunnel. The
+maintainer's environment-specific runbook is in `CLAUDE.local.md` (gitignored).
 
-**Multi-league:** `YAHOO_LEAGUE_ID` sets only the *default* league. Targeting another league the authenticated account already belongs to needs **no redeploy or config change** — clients pass a per-call `league_id` (see "Tools exposed"), validated against the account's own leagues. Only changing the *default* requires updating the env var (and a restart).
+**Multi-league:** `YAHOO_LEAGUE_ID` sets only the *default* league. Targeting
+another league the authenticated account already belongs to needs **no redeploy
+or config change** — clients pass a per-call `league_id` (see "Tools exposed"),
+validated against the account's own leagues. Only changing the *default*
+requires updating the env var (and a restart).
 
 ## Tools exposed
 
-Keep tool names and input schemas stable — they are the server's public contract with MCP clients. Renaming a tool or changing a parameter is a breaking change.
+Keep tool names and input schemas stable — they are the server's public
+contract with MCP clients. Renaming a tool or changing a parameter is a
+breaking change.
 
-**Multi-league:** every league-scoped tool takes an optional `league_id` (the bare numeric id) to target a league other than the configured default (`cfg.league_id`). `_get_league(sc, league_id)` resolves it and validates any explicit override against the account's own leagues (`_get_my_leagues` → `_parse_my_leagues`, cached per process), raising a clear error for a league the token can't see; if discovery is unavailable it degrades permissive rather than blocking. Response payloads echo the *resolved* league via `_resolved_league_id(lg)`, and the scoring-config cache (`_scoring_configs`) is keyed by `league_key` so leagues don't clobber each other's category labels.
+**Multi-league:** every league-scoped tool takes an optional `league_id` (the
+bare numeric id) to target a league other than the configured default
+(`cfg.league_id`). `_get_league(sc, league_id)` resolves it and validates any
+explicit override against the account's own leagues (`_get_my_leagues` →
+`_parse_my_leagues`, cached per process), raising a clear error for a league the
+token can't see; if discovery is unavailable it degrades permissive rather than
+blocking. Response payloads echo the *resolved* league via
+`_resolved_league_id(lg)`, and the scoring-config cache (`_scoring_configs`) is
+keyed by `league_key` so leagues don't clobber each other's category labels.
 
 - `yahoo_list_my_leagues` — the leagues the authenticated account belongs to (`league_id`, `name`, `season`, `is_default`), plus `default_league_id`. Use it to discover the ids accepted by the other tools' `league_id` parameter.
 - `yahoo_list_teams` — list all teams (numbers, keys, managers)
@@ -111,11 +140,18 @@ Keep tool names and input schemas stable — they are the server's public contra
 
 ## Prompts
 
-`@mcp.prompt` templates (in `server.py`, after the tools) that orchestrate the tools for common multi-step questions: `analyze_matchup`, `waiver_help`, `weekly_recap`. **Design rule:** the orchestration/strategy lives in the prompt text (it tells Claude which tools to chain and how to reason), keeping the tools themselves a thin read-only data layer. Put new "do X for me" workflows here as prompts rather than baking strategy into tool handlers. `waiver_help` leans on `yahoo_search_free_agents`' `time_period=lastweek` for recent form.
+`@mcp.prompt` templates (in `server.py`, after the tools) that orchestrate the
+tools for common multi-step questions: `analyze_matchup`, `waiver_help`,
+`weekly_recap`. **Design rule:** the orchestration/strategy lives in the prompt
+text (it tells Claude which tools to chain and how to reason), keeping the tools
+themselves a thin read-only data layer. Put new "do X for me" workflows here as
+prompts rather than baking strategy into tool handlers. `waiver_help` leans on
+`yahoo_search_free_agents`' `time_period=lastweek` for recent form.
 
 ## Yahoo API gotchas
 
-The Yahoo Fantasy API response format is the main source of bugs in this repo. Be defensive:
+The Yahoo Fantasy API response format is the main source of bugs in this repo.
+Be defensive:
 
 - Responses are **deeply nested and positional** — arrays interleave data objects with empty `[]` placeholders, and collections use **numeric string keys** (`"0"`, `"1"`, ...) plus a `count`. Never assume a fixed index; locate data by key/shape, not by position.
 - Stats arrive as `{stat: {stat_id, value}}` lists — map by `stat_id` (labels/scoring come from the league-derived `ScoringConfig`), never by order.
@@ -133,3 +169,4 @@ The Yahoo Fantasy API response format is the main source of bugs in this repo. B
 - **Preserve tool contracts.** Don't rename tools or change parameter names/types without explicit instruction; downstream MCP clients depend on them.
 - **No secrets in the repo.** Yahoo tokens, client IDs/secrets, and any edge/proxy credentials stay out of version control.
 - **Match existing style.** Follow the patterns already in the file (naming, error handling, response parsing helpers) rather than introducing new ones.
+- **Wrap prose at ~80 columns.** Hard-wrap narrative paragraphs (and blockquotes) near 80 chars so edits produce line-granular diffs; keep Markdown **list items** and **fenced code blocks** on a single line each — never wrap them (a wrapped bullet needs fragile continuation-indentation, and wrapped commands change meaning). Count *characters*, not bytes: `—`/`→`/`…` are multibyte in UTF-8, so a visually-fine line can read >80 bytes. No formatter enforces this (no Prettier/markdownlint/`.editorconfig`) — maintain it by hand. Applies to this file and `CLAUDE.local.md`.
