@@ -25,3 +25,12 @@ jobs:
 
       - name: Run parser tests
         run: uv run pytest -q
+
+      # Fail the build if a locked dependency has a published advisory, so a
+      # CVE blocks a merge instead of waiting on a Dependabot bump. Audits the
+      # production tree (--no-dev) to match what actually ships to the deploy
+      # host; --no-emit-project drops the editable self-package (not on PyPI).
+      - name: Audit dependencies for known advisories
+        run: |
+          uv export --frozen --no-dev --no-emit-project --no-hashes --format requirements-txt -o requirements-audit.txt
+          uvx pip-audit -r requirements-audit.txt
