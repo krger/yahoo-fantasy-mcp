@@ -955,7 +955,6 @@ async def yahoo_get_player_stats(params: GetPlayerStatsInput) -> str:
                         f"players;player_keys={pkey}/stats?format=json"
                     )
                     sresp = sc.session.get(stats_url)
-                    logger.info(f"player_stats GET {stats_url} -> {sresp.status_code} body[:200]={sresp.text[:200]!r}")
                     sresp.raise_for_status()
                     sdata = sresp.json()
                     if isinstance(info, dict):
@@ -1598,7 +1597,6 @@ async def yahoo_get_players_batch(params: GetPlayersBatchInput) -> str:
                 # and the extra kwarg on an OAuth1 session was producing an XML error
                 # page that blew up json.loads with "Expecting value: line 1 column 1".
                 resp = sc.session.get(url)
-                logger.info(f"players_batch GET {url} -> {resp.status_code} body[:200]={resp.text[:200]!r}")
                 resp.raise_for_status()
                 if not resp.text.strip():
                     raise ValueError("Empty response body from Yahoo batch endpoint")

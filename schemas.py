@@ -21,6 +21,12 @@ _LEAGUE_ID_DESC = (
     "discover the leagues this account belongs to."
 )
 
+# A league id is a bare integer in Yahoo's URLs; enforce that here so a crafted
+# value can't inject extra path/filter segments when it's interpolated into a
+# Yahoo API URL (the override is otherwise only validated against the account's
+# leagues when league discovery succeeds — see _get_league).
+_LEAGUE_ID_PATTERN = r"^\d+$"
+
 
 class LeagueScopedInput(BaseModel):
     """Base for tools that operate on a single league.
@@ -31,7 +37,9 @@ class LeagueScopedInput(BaseModel):
     """
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
-    league_id: Optional[str] = Field(default=None, description=_LEAGUE_ID_DESC)
+    league_id: Optional[str] = Field(
+        default=None, description=_LEAGUE_ID_DESC, pattern=_LEAGUE_ID_PATTERN
+    )
 
 
 class GetStandingsInput(LeagueScopedInput):
