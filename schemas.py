@@ -141,6 +141,80 @@ class SearchFreeAgentsInput(LeagueScopedInput):
     )
 
 
+class GetWaiversInput(LeagueScopedInput):
+    """Input for listing players currently on waivers."""
+
+    position: Optional[str] = Field(
+        default=None,
+        description=(
+            "Filter by position. Examples: C, 1B, 2B, 3B, SS, OF, Util, SP, RP. "
+            "If omitted, returns all positions."
+        ),
+    )
+    sort: Optional[str] = Field(
+        default="AR",
+        description=(
+            "Sort order. Named values: AR (actual rank, default), OR, NAME, "
+            "O_AR. Stat abbreviations (R, HR, RBI, SB, AVG, W, SV, K, ERA, "
+            "WHIP, ...) translate to Yahoo stat IDs server-side; a numeric "
+            "stat ID also works. PTS returns nothing in this categories league."
+        ),
+    )
+    count: Optional[int] = Field(
+        default=25,
+        description="Number of results to return (default 25, max 50).",
+        ge=1,
+        le=50,
+    )
+    time_period: Optional[Literal["season", "lastweek", "lastmonth", "biweekly"]] = Field(
+        default=None,
+        description=(
+            "Time window for stat/category sorts: season (default), lastweek, "
+            "lastmonth, or biweekly. Use lastweek/biweekly to surface players "
+            "in good recent form. Only affects stat-based sorts; displayed "
+            "stats remain season totals."
+        ),
+    )
+
+
+class GetTakenPlayersInput(LeagueScopedInput):
+    """Input for listing all rostered (taken) players across the league."""
+
+    position: Optional[str] = Field(
+        default=None,
+        description=(
+            "Filter by position. Examples: C, 1B, 2B, 3B, SS, OF, Util, SP, RP. "
+            "If omitted, returns all positions."
+        ),
+    )
+    sort: Optional[str] = Field(
+        default="AR",
+        description=(
+            "Sort order. Named values: AR (actual rank, default), OR, NAME, "
+            "O_AR. Stat abbreviations (R, HR, RBI, SB, AVG, W, SV, K, ERA, "
+            "WHIP, ...) translate to Yahoo stat IDs server-side; a numeric "
+            "stat ID also works. PTS returns nothing in this categories league."
+        ),
+    )
+    count: Optional[int] = Field(
+        default=300,
+        description=(
+            "Number of results to return (default 300 — enough to cover every "
+            "rostered player in a typical league; max 500)."
+        ),
+        ge=1,
+        le=500,
+    )
+    time_period: Optional[Literal["season", "lastweek", "lastmonth", "biweekly"]] = Field(
+        default=None,
+        description=(
+            "Time window for stat/category sorts: season (default), lastweek, "
+            "lastmonth, or biweekly. Only affects stat-based sorts; displayed "
+            "stats remain season totals."
+        ),
+    )
+
+
 class GetPlayerStatsInput(LeagueScopedInput):
     """Input for getting player statistics."""
 

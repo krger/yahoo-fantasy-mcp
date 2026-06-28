@@ -1,6 +1,6 @@
 [project]
 name = "yahoo-fantasy-mcp"
-version = "1.0.1"
+version = "1.1.0"
 description = "MCP server for Yahoo Fantasy Baseball"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -19,7 +19,7 @@ build-backend = "hatchling.build"
 packages = ["."]
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.6"]
+dev = ["pytest>=9.1.0", "ruff>=0.15.17"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

@@ -49,7 +49,9 @@ from schemas import (
     GetRosterInput,
     GetScoreboardInput,
     GetStandingsInput,
+    GetTakenPlayersInput,
     GetTransactionsInput,
+    GetWaiversInput,
     ListTeamsInput,
     SearchFreeAgentsInput,
 )
@@ -280,6 +282,10 @@ def _format_player(player: dict) -> dict:
     stats = player.get("stats") if isinstance(player, dict) else None
     if stats:
         out["stats"] = stats
+    # Owner team is present only for taken players (fetched with ;out=ownership).
+    ownership = player.get("ownership") if isinstance(player, dict) else None
+    if ownership:
+        out["ownership"] = ownership
     return out
 
 
@@ -349,13 +355,16 @@ def _fetch_free_agents_raw(
     sort: Optional[str] = "AR",
     count: int = 25,
     time_period: Optional[str] = None,
+    out_fields: str = "percent_owned,stats",
 ) -> list[dict]:
     """Call Yahoo's /players collection directly and return a list of flat
     player dicts matching the shape ``_format_player`` consumes.
 
     Sort, status, and position are all applied server-side by Yahoo.
     Pagination is handled transparently so counts above Yahoo's 25-per-page
-    cap work as expected.
+    cap work as expected. ``out_fields`` controls the ``;out=`` sub-resources
+    requested inline — taken-player listings add ``ownership`` to surface the
+    owning fantasy team, which free agents/waivers lack.
     """
     sort_value, is_stat_id = _resolve_sort(sort)
 
@@ -384,9 +393,9 @@ def _fetch_free_agents_raw(
     start = 0
     while len(collected) < requested:
         page_filters = filters + [f"count={PAGE}", f"start={start}"]
-        # Request percent_owned + season stats inline so each player carries
-        # ownership and per-category values without a follow-up call.
-        filter_str = ";".join(page_filters) + ";out=percent_owned,stats"
+        # Request percent_owned + season stats (and, for taken players,
+        # ownership) inline so each player carries them without a follow-up call.
+        filter_str = ";".join(page_filters) + f";out={out_fields}"
         url = (
             f"https://fantasysports.yahooapis.com/fantasy/v2/"
             f"league/{league_key}/players;{filter_str}?format=json"
@@ -878,6 +887,141 @@ async def yahoo_search_free_agents(params: SearchFreeAgentsInput) -> str:
             "sort_by": params.sort,
             "time_period": params.time_period or "season",
             "status": params.status,
+            "count": len(formatted),
+            "players": formatted,
+        }
+        return json.dumps(result, indent=2, default=str)
+
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool(
+    name="yahoo_get_waivers",
+    annotations={
+        "title": "Get Waiver-Wire Players",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def yahoo_get_waivers(params: GetWaiversInput) -> str:
+    """List the players currently on waivers.
+
+    Waivers are players who have been dropped and are serving a waiver
+    period before clearing to free agency — distinct from immediately
+    addable free agents (``yahoo_search_free_agents``). Surfacing them lets
+    you spot a just-dropped useful player before he clears and time a claim
+    (place the claim in the Yahoo UI — this server is read-only). Returns the
+    same per-player shape as the free-agent search: name, positions, MLB
+    team, percent owned, and a ``stats`` map of season category totals.
+
+    Args:
+        params (GetWaiversInput): Validated input containing:
+            - position (Optional[str]): Position filter (C, 1B, ..., SP, RP).
+            - sort (Optional[str]): Sort key (AR default, or a stat — same
+              vocabulary as yahoo_search_free_agents).
+            - count (Optional[int]): Number of results (default 25, max 50).
+            - time_period (Optional[str]): Stat-sort window (season default,
+              lastweek/lastmonth/biweekly for recent form).
+
+    Returns:
+        str: JSON list of players on waivers, sorted by the given key.
+    """
+    try:
+        sc = _get_oauth_session()
+        lg = _get_league(sc, params.league_id)
+
+        # Waivers are the Yahoo /players collection with status=W — the same
+        # path as free agents, narrowed to the waiver wire.
+        players = _fetch_free_agents_raw(
+            sc,
+            lg.league_key,
+            _get_scoring_config(sc, lg),
+            status="W",
+            position=params.position,
+            sort=params.sort or "AR",
+            count=params.count or 25,
+            time_period=params.time_period,
+        )
+
+        formatted = [_format_player(p) for p in players]
+
+        result = {
+            "league_id": _resolved_league_id(lg),
+            "position_filter": params.position or "all",
+            "sort_by": params.sort,
+            "time_period": params.time_period or "season",
+            "count": len(formatted),
+            "players": formatted,
+        }
+        return json.dumps(result, indent=2, default=str)
+
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool(
+    name="yahoo_get_taken_players",
+    annotations={
+        "title": "Get Taken (Rostered) Players",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def yahoo_get_taken_players(params: GetTakenPlayersInput) -> str:
+    """List every rostered (taken) player across the league, with owner team.
+
+    The inverse of free agents: all players currently owned by a team,
+    each annotated with the fantasy team that holds them (``ownership``:
+    ``owner_team_key`` / ``owner_team_name``) — a league-wide ownership map
+    no other tool produces. Use it to find trade targets by category need
+    (e.g. who holds the closers/SB sources in a categories league) without
+    fetching all teams' rosters one by one. Each player also carries
+    positions, MLB team, percent owned, and a ``stats`` map of season
+    category totals.
+
+    Args:
+        params (GetTakenPlayersInput): Validated input containing:
+            - position (Optional[str]): Position filter (C, 1B, ..., SP, RP).
+            - sort (Optional[str]): Sort key (AR default, or a stat — same
+              vocabulary as yahoo_search_free_agents).
+            - count (Optional[int]): Number of results (default 300 to cover
+              every rostered player; max 500).
+            - time_period (Optional[str]): Stat-sort window (season default).
+
+    Returns:
+        str: JSON list of rostered players, each with its owning team.
+    """
+    try:
+        sc = _get_oauth_session()
+        lg = _get_league(sc, params.league_id)
+
+        # Taken players are the /players collection with status=T. Add
+        # ownership to ;out= so each player carries its owning fantasy team —
+        # the field that distinguishes this from a free-agent listing.
+        players = _fetch_free_agents_raw(
+            sc,
+            lg.league_key,
+            _get_scoring_config(sc, lg),
+            status="T",
+            position=params.position,
+            sort=params.sort or "AR",
+            count=params.count or 300,
+            time_period=params.time_period,
+            out_fields="percent_owned,stats,ownership",
+        )
+
+        formatted = [_format_player(p) for p in players]
+
+        result = {
+            "league_id": _resolved_league_id(lg),
+            "position_filter": params.position or "all",
+            "sort_by": params.sort,
+            "time_period": params.time_period or "season",
             "count": len(formatted),
             "players": formatted,
         }

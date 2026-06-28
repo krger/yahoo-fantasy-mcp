@@ -178,6 +178,19 @@ def _flatten_raw_yahoo_player(player_entry: list, scoring: ScoringConfig) -> dic
             if stats:
                 flat["stats"] = stats
 
+        # ownership (present when requested via ;out=ownership) carries the
+        # fantasy team that holds the player — the distinguishing field for
+        # taken-players listings (free agents have no owner_team_key).
+        own = extra.get("ownership")
+        if isinstance(own, dict):
+            owner = {
+                k: own[k]
+                for k in ("ownership_type", "owner_team_key", "owner_team_name")
+                if own.get(k)
+            }
+            if owner:
+                flat["ownership"] = owner
+
     return flat
 
 

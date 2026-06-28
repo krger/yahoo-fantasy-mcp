@@ -196,6 +196,31 @@ PLAYER_ENTRY = [
 ]
 
 
+# A taken (rostered) player: same shape as PLAYER_ENTRY plus an ownership
+# sub-resource (requested via ;out=ownership) naming the owning fantasy team.
+PLAYER_ENTRY_OWNED = [
+    [
+        {"player_key": "469.p.2"},
+        {"player_id": "2"},
+        {"name": {"full": "Owned Closer", "first": "Owned", "last": "Closer"}},
+        {"editorial_team_abbr": "LAD"},
+        {"display_position": "RP"},
+        {"position_type": "P"},
+        {"eligible_positions": [{"position": "RP"}, {"position": "P"}]},
+    ],
+    {"percent_owned": {"value": 98}},
+    {"ownership": {
+        "ownership_type": "team",
+        "owner_team_key": "469.l.1.t.5",
+        "owner_team_name": "Lincolnshire Poachers",
+    }},
+    {"player_stats": {"stats": [
+        {"stat": {"stat_id": "32", "value": "14"}},  # SV
+        {"stat": {"stat_id": "42", "value": "31"}},  # K
+    ]}},
+]
+
+
 # --- raw league/{key}/settings response (for build_scoring_config) ----------
 # stat_categories.stats lists each category with display_name, sort_order
 # ("1" high-first, "0" low-first), and is_only_display_stat ("1" for
