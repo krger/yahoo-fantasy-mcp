@@ -74,13 +74,16 @@ uvx pip-audit -r requirements-audit.txt
 ```
 
 `tests/fixtures.py` holds minimal Yahoo responses reproducing the positional
-quirks (including `SETTINGS_RAW` for `build_scoring_config` and `MY_LEAGUES_RAW`,
-a multi-game/multi-league `users/games/leagues` response for `_parse_my_leagues`);
+quirks (including `SETTINGS_RAW` for `build_scoring_config`, `MY_LEAGUES_RAW`,
+a multi-game/multi-league `users/games/leagues` response for `_parse_my_leagues`,
+and `PLAYER_ENTRY_OWNED`, a taken-player entry carrying an `ownership`
+sub-resource);
 `tests/test_parsers.py` covers `build_scoring_config` (label/scored/lower-is-better
 derivation + empty fallback), `_to_int`/`_to_number`, `_extract_team_summary`,
 `_parse_matchup_node` (both framings), `_parse_matchup`, `_parse_scoreboard`,
 `_parse_team_season_stats`, `_rank_season_categories` (ranking direction + ties),
-`_parse_standings`, `_flatten_raw_yahoo_player`, `_resolve_team_key`, and
+`_parse_standings`, `_flatten_raw_yahoo_player` (incl. owner-team extraction for
+taken players), `_resolve_team_key`, and
 `_parse_my_leagues` (multi-league walk, empty fallback, dict-vs-list league node)
 — all imported from `yahoo_parsers` (the test imports that module directly, not
 `server`). **Add a case here when you touch a parser** — especially new stat_ids
@@ -133,6 +136,8 @@ keyed by `league_key` so leagues don't clobber each other's category labels.
 - `yahoo_get_league_settings` — config, rules, scoring
 - `yahoo_get_transactions` — recent transaction history
 - `yahoo_search_free_agents` — available free agents. Each player includes a `stats` map of season totals per scoring category (labeled via the league-derived `ScoringConfig`, numbers coerced; H/AB kept as a ratio string), fetched inline via `;out=percent_owned,stats` and parsed in `_flatten_raw_yahoo_player`. `time_period` (`season`/`lastweek`/`lastmonth`/`biweekly`) sets the Yahoo `sort_type` for stat-based sorts — used to surface recent-form pickups; only `season` sends `sort_season`. The displayed `stats` remain season totals; the window only controls ranking order.
+- `yahoo_get_waivers` — players currently on the waiver wire (Yahoo `/players` collection with `status=W`, via the same `_fetch_free_agents_raw` path as free agents). Distinct from free agents: these are dropped players serving a waiver period before clearing. Same per-player shape (positions, MLB team, percent owned, season `stats`). Read-only — surfaces who to claim; the claim itself is placed in the Yahoo UI.
+- `yahoo_get_taken_players` — all rostered (taken) players league-wide (`status=T`), each annotated with the owning fantasy team. The only tool that adds `ownership` (`owner_team_key`/`owner_team_name`) to `;out=` so `_flatten_raw_yahoo_player` emits an `ownership` block — a league-wide owner map for trade-target/category-scarcity analysis without iterating every team's roster. Defaults `count=300` (covers a full league); paginates past Yahoo's 25/page cap.
 - `yahoo_get_player_stats` — single player lookup
 - `yahoo_get_players_batch` — multiple players in one call
 - `yahoo_get_player_notes` — news / injury notes

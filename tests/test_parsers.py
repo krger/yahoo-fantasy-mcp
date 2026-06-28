@@ -230,6 +230,23 @@ def test_flatten_raw_yahoo_player_handles_no_subresources():
     assert flat["name"] == "Test Hitter"
     assert "stats" not in flat
     assert "percent_owned" not in flat
+    # free agents carry no ownership block
+    assert "ownership" not in flat
+
+
+def test_flatten_raw_yahoo_player_extracts_owner_team():
+    # taken players (;out=ownership) carry the owning fantasy team
+    flat = parsers._flatten_raw_yahoo_player(fx.PLAYER_ENTRY_OWNED, SCORING)
+    assert flat["name"] == "Owned Closer"
+    assert flat["player_id"] == "2"
+    assert flat["percent_owned"] == 98
+    assert flat["ownership"] == {
+        "ownership_type": "team",
+        "owner_team_key": "469.l.1.t.5",
+        "owner_team_name": "Lincolnshire Poachers",
+    }
+    # stats still parse alongside ownership
+    assert flat["stats"] == {"SV": 14, "K": 31}
 
 
 # --- team-number resolution ------------------------------------------------
