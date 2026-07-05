@@ -6,7 +6,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.13"
 dependencies = [
-    "mcp[cli]>=1.27.2",
+    "mcp[cli]>=1.28.1",
     "yahoo_fantasy_api>=2.12.2",
     "yahoo_oauth>=2.1.1",
 ]
