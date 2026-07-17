@@ -14,6 +14,9 @@ from tests import fixtures as fx
 # label/rank categories take this instead of reading module globals.
 SCORING = parsers.build_scoring_config(fx.SETTINGS_RAW)
 
+# Points-league (fantasy football) scoring config for the points-framing tests.
+SCORING_PTS = parsers.build_scoring_config(fx.SETTINGS_RAW_POINTS)
+
 
 # --- scoring config from league settings -----------------------------------
 
@@ -104,6 +107,7 @@ def test_extract_team_summary_locates_fields_by_key():
 
 def test_parse_matchup_node_perspective_results():
     m = parsers._parse_matchup_node(fx.MATCHUP_NODE, SCORING, "469.l.1.t.5")
+    assert m["scoring"] == "categories"
     assert m["week"] == 10
     assert m["is_playoffs"] is False
     assert m["team"]["team_key"] == "469.l.1.t.5"
@@ -146,6 +150,7 @@ def test_parse_matchup_node_raises_when_team_absent():
 
 def test_parse_matchup_node_neutral_values_and_winner():
     m = parsers._parse_matchup_node(fx.MATCHUP_NODE, SCORING)
+    assert m["scoring"] == "categories"
     assert "teams" in m and "team" not in m
     assert {t["team_key"] for t in m["teams"]} == {"469.l.1.t.5", "469.l.1.t.7"}
 
@@ -180,6 +185,63 @@ def test_parse_scoreboard_returns_list_of_breakdowns():
     assert isinstance(out, list) and len(out) == 1
     assert "teams" in out[0]
     assert out[0]["week"] == 10
+
+
+# --- matchup node: points-league (football) framing -----------------------
+
+def test_parse_matchup_node_points_perspective():
+    m = parsers._parse_matchup_node(fx.MATCHUP_NODE_POINTS, SCORING_PTS, "470.l.1.t.3")
+    assert m["scoring"] == "points"
+    assert m["week"] == 1
+    # winner comes from the matchup-level winner_team_key, not per-category.
+    assert m["result"] == "win"
+    assert m["team"]["team_key"] == "470.l.1.t.3"
+    assert m["team"]["points"] == 112.34            # fantasy-points total, coerced
+    assert m["team"]["projected_points"] == 104.90
+    assert m["opponent"]["team_key"] == "470.l.1.t.8"
+    assert m["opponent"]["points"] == 98.10
+    # no per-category win/loss framing in a points league
+    assert "categories" not in m
+    by = {s["stat"]: s for s in m["stat_lines"]}
+    assert by["Pass Yds"]["team"] == "312" and by["Pass Yds"]["opponent"] == "245"
+    assert "result" not in by["Pass Yds"] and "scored" not in by["Pass Yds"]
+
+
+def test_parse_matchup_node_points_flips_for_opponent():
+    m = parsers._parse_matchup_node(fx.MATCHUP_NODE_POINTS, SCORING_PTS, "470.l.1.t.8")
+    assert m["team"]["team_key"] == "470.l.1.t.8"
+    assert m["result"] == "loss"                    # t8 lost on total points
+    assert m["team"]["points"] == 98.10
+
+
+def test_parse_matchup_node_points_tie_and_undecided():
+    # is_tied wins over winner_team_key; a node with neither -> result None.
+    tied = {**fx.MATCHUP_NODE_POINTS, "is_tied": 1, "winner_team_key": None}
+    assert parsers._parse_matchup_node(tied, SCORING_PTS, "470.l.1.t.3")["result"] == "tie"
+    undecided = {**fx.MATCHUP_NODE_POINTS, "is_tied": 0, "winner_team_key": None}
+    assert parsers._parse_matchup_node(undecided, SCORING_PTS, "470.l.1.t.3")["result"] is None
+
+
+def test_parse_matchup_node_points_neutral_winner():
+    m = parsers._parse_matchup_node(fx.MATCHUP_NODE_POINTS, SCORING_PTS)
+    assert m["scoring"] == "points"
+    assert "teams" in m and "team" not in m
+    assert m["winner"] == "470.l.1.t.3"
+    pts = {t["team_key"]: t["points"] for t in m["teams"]}
+    assert pts == {"470.l.1.t.3": 112.34, "470.l.1.t.8": 98.10}
+    by = {s["stat"]: s for s in m["stat_lines"]}
+    assert by["Rush Yds"]["values"] == {"470.l.1.t.3": "88", "470.l.1.t.8": "140"}
+
+
+def test_parse_matchup_points_wrapper_unwraps_team_response():
+    m = parsers._parse_matchup(fx.MATCHUP_RAW_POINTS, "470.l.1.t.3", SCORING_PTS)
+    assert m["scoring"] == "points" and m["result"] == "win"
+
+
+def test_parse_scoreboard_points_league():
+    out = parsers._parse_scoreboard(fx.SCOREBOARD_RAW_POINTS, SCORING_PTS)
+    assert len(out) == 1 and out[0]["scoring"] == "points"
+    assert out[0]["winner"] == "470.l.1.t.3"
 
 
 # --- season stats + ranking ------------------------------------------------
@@ -240,6 +302,17 @@ def test_parse_standings_merges_categories_by_team_key():
     other = next(t for t in out if t["team_key"] == "469.l.1.t.7")
     assert leader["categories"] == [{"stat": "HR", "value": 62, "rank": 9}]
     assert other["categories"] == []                 # missing -> empty list
+
+
+def test_parse_standings_points_league_surfaces_points_for_against():
+    # A points league carries points_for/points_against (no category totals);
+    # the handler passes season_categories=None so no "categories" key appears.
+    out = parsers._parse_standings(fx.STANDINGS_LIST_POINTS)
+    leader = next(t for t in out if t["team_key"] == "470.l.1.t.3")
+    assert leader["record"] == {"wins": 10, "losses": 3, "ties": 0, "pct": 0.769}
+    assert leader["points_for"] == 1543.22           # coerced to float
+    assert leader["points_against"] == 1402.88
+    assert "categories" not in leader
 
 
 # --- free-agent player flattening -----------------------------------------

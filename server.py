@@ -782,15 +782,19 @@ async def yahoo_get_standings(params: GetStandingsInput) -> str:
 
         # Season category totals come from a separate teams/stats call; degrade
         # gracefully to records-only if it fails rather than dropping standings.
+        # Skip it for a points league (fantasy football): per-category ranking
+        # isn't meaningful there — standings rank by record + points-for, which
+        # _parse_standings surfaces directly from the standings entries.
+        scoring = _get_scoring_config(sc, lg)
         season_categories = None
-        try:
-            raw_stats = lg.yhandler.get(f"league/{lg.league_key}/teams/stats")
-            season_categories = _rank_season_categories(
-                _parse_team_season_stats(raw_stats),
-                _get_scoring_config(sc, lg),
-            )
-        except Exception as e:
-            logger.warning(f"Could not fetch season category totals: {e}")
+        if not scoring.is_points_league:
+            try:
+                raw_stats = lg.yhandler.get(f"league/{lg.league_key}/teams/stats")
+                season_categories = _rank_season_categories(
+                    _parse_team_season_stats(raw_stats), scoring,
+                )
+            except Exception as e:
+                logger.warning(f"Could not fetch season category totals: {e}")
 
         result = {
             "league_id": _resolved_league_id(lg),
