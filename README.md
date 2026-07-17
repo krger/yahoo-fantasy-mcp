@@ -1,10 +1,10 @@
-# Yahoo Fantasy Baseball MCP Server
+# Yahoo Fantasy MCP Server
 
 [![tests](https://github.com/krger/yahoo-fantasy-mcp/actions/workflows/test.yml/badge.svg)](https://github.com/krger/yahoo-fantasy-mcp/actions/workflows/test.yml)
 
-A read-only MCP server that gives Claude access to your Yahoo Fantasy Baseball league data. It runs as a **remote MCP server over streamable HTTP** (serving the MCP endpoint at `/mcp`) — you host it and connect Claude to it by URL, rather than running it as a local stdio subprocess.
+A read-only MCP server that gives Claude access to your Yahoo Fantasy Sports league data (baseball, football, …). It runs as a **remote MCP server over streamable HTTP** (serving the MCP endpoint at `/mcp`) — you host it and connect Claude to it by URL, rather than running it as a local stdio subprocess.
 
-**Works with any Yahoo league.** Point it at your own league with `YAHOO_LEAGUE_ID` (there's no baked-in default) — the server reads your league's scoring categories from Yahoo at runtime, so standings ranks and matchup breakdowns adapt to whatever categories your league actually uses (it doesn't assume a particular 10-category setup). The current season is auto-detected.
+**Works with any Yahoo league.** Point it at your own league with `YAHOO_LEAGUE_ID` (there's no baked-in default) — the server reads your league's settings from Yahoo at runtime, so it adapts to the league's own scoring: standings and matchup breakdowns use the actual categories in a head-to-head **categories** league (e.g. baseball), or fantasy-points totals in a head-to-head **points** league (typical fantasy football). It doesn't assume a particular sport or category set, and the current season is auto-detected. One server can serve **multiple sports** at once (see `YAHOO_SPORT`).
 
 ## Tools
 
@@ -29,8 +29,8 @@ One-click prompt templates (in Claude's connector menu) that chain the tools for
 
 | Prompt | What it does |
 |--------|--------------|
-| **Analyze my matchup** | Summarizes your current head-to-head matchup — categories won/lost/tied, margins, and where it'll be decided |
-| **Waiver wire help** | Identifies the categories you're losing, then surfaces recent-form free agents who'd improve them |
+| **Analyze my matchup** | Summarizes your current head-to-head matchup — categories won/lost/tied in a categories league, or the fantasy-points margin in a points league — with the margins and where it'll be decided |
+| **Waiver wire help** | Finds recent-form free agents who'd improve your team — targeting the categories you're losing, or your weakest starting spots in a points league |
 | **Weekly recap** | Standings + your matchup status + notable league transactions |
 
 ## Setup
@@ -132,7 +132,7 @@ list and are available in chat.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `YAHOO_LEAGUE_ID` | _(required)_ | Your **default** Yahoo league ID — the numeric id in your league URL (e.g. `12345`). The server refuses to start without it. Tools accept a per-call `league_id` to target other leagues your account is in. |
-| `YAHOO_SPORT` | `mlb` | Yahoo game code |
+| `YAHOO_SPORT` | `mlb` | Yahoo game code. Accepts a comma-separated list (e.g. `mlb,nfl`) to serve multiple sports from one deployment; the first is the default sport. Per-call `league_id` can target any league your account is in across these games. |
 | `YAHOO_SEASON` | _(current)_ | Season year (e.g. `2026`). If unset, the current season is auto-detected; set it to pin a past season. |
 | `YAHOO_OAUTH_FILE` | `./oauth2.json` | Path to OAuth credentials |
 
@@ -141,7 +141,7 @@ list and are available in chat.
 Once connected, try asking Claude things like:
 
 - "Show me my current roster"
-- "Who are the best available shortstops?"
+- "Who are the best available shortstops?" (baseball) / "Who are the best available running backs?" (football)
 - "What are the league standings?"
 - "Show me the free agent starting pitchers sorted by ERA"
 - "Compare my team's roster to team 3's roster"
