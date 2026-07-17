@@ -30,10 +30,18 @@ class ScoringConfig:
     - ``scored_stat_ids``: the scored categories in display order (informational
       stats like IP / H-AB excluded); used for standings season-total ranking.
     - ``lower_is_better``: stat_ids where a lower value ranks higher (ERA/WHIP).
+    - ``is_points_league``: True for a head-to-head/season **points** league
+      (fantasy football's usual format), where the matchup is decided by a
+      single fantasy-points total rather than per-category wins. Detected from
+      the league settings (presence of ``stat_modifiers`` / a ``point``
+      scoring type). Consumers use it to pick the points vs categories framing
+      for matchups and standings; the per-category ``scored_stat_ids`` ranking
+      is meaningful only for a categories league.
     """
     stat_id_to_name: dict[str, str]
     scored_stat_ids: list[str]
     lower_is_better: frozenset[str]
+    is_points_league: bool = False
 
     def label(self, stat_id: str) -> str:
         """Display label for a stat_id, falling back to the id itself."""
@@ -56,14 +64,26 @@ def build_scoring_config(raw_settings: dict) -> ScoringConfig:
     better (ERA/WHIP); ``is_only_display_stat`` is ``"1"`` for informational
     categories (e.g. IP, H/AB) that are shown but not scored. Degrades to
     ``ScoringConfig.empty()`` if the expected shape is absent.
+
+    Points-league detection: a points league (typical fantasy football) assigns
+    a point value to each stat, so its settings carry a ``stat_modifiers.stats``
+    block that a categories league lacks; ``scoring_type`` (on the league meta,
+    ``league[0]``) is also authoritative when it is ``"point"``. Either signal
+    marks ``is_points_league``.
     """
     league = raw_settings.get("fantasy_content", {}).get("league", [])
+    meta = league[0] if league and isinstance(league[0], dict) else {}
     settings = league[1].get("settings") if len(league) > 1 else None
     if isinstance(settings, list):
         settings = settings[0] if settings else {}
     if not isinstance(settings, dict):
         return ScoringConfig.empty()
     stats = settings.get("stat_categories", {}).get("stats", [])
+
+    # A points league prices each stat via stat_modifiers (a categories league
+    # has none); scoring_type == "point" is the other authoritative signal.
+    has_modifiers = bool(settings.get("stat_modifiers", {}).get("stats"))
+    is_points = has_modifiers or meta.get("scoring_type") == "point"
 
     names: dict[str, str] = {}
     scored: list[str] = []
@@ -84,6 +104,7 @@ def build_scoring_config(raw_settings: dict) -> ScoringConfig:
         stat_id_to_name=names,
         scored_stat_ids=scored,
         lower_is_better=frozenset(lower),
+        is_points_league=is_points,
     )
 
 

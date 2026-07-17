@@ -35,6 +35,36 @@ def test_build_scoring_config_empty_on_bad_shape():
     sc = parsers.build_scoring_config({})
     assert sc.scored_stat_ids == [] and sc.stat_id_to_name == {}
     assert sc.label("7") == "7"                # degrades to the raw id
+    assert sc.is_points_league is False        # default framing is categories
+
+
+def test_categories_league_is_not_points():
+    # The baseball settings fixture has no stat_modifiers -> categories framing.
+    assert SCORING.is_points_league is False
+
+
+def test_points_league_detected_from_stat_modifiers():
+    # A football-style points league prices stats via stat_modifiers.
+    sc = parsers.build_scoring_config(fx.SETTINGS_RAW_POINTS)
+    assert sc.is_points_league is True
+    # Labels still resolve from the real NFL stat_ids...
+    assert sc.label("4") == "Pass Yds"
+    assert sc.label("13") == "Rec TD"
+    # ...and non-display stats populate scored_stat_ids as usual (their per-
+    # category ranking is just unused for a points league's standings).
+    assert sc.scored_stat_ids == ["4", "5", "6", "9", "10", "12", "13", "18"]
+
+
+def test_points_league_detected_from_scoring_type(monkeypatch):
+    # scoring_type == "point" is authoritative even without stat_modifiers
+    # (season-long points leagues).
+    raw = {"fantasy_content": {"league": [
+        {"league_key": "470.l.9", "scoring_type": "point"},
+        {"settings": [{"stat_categories": {"stats": [
+            {"stat": {"stat_id": 4, "display_name": "Pass Yds", "sort_order": "1"}}]}}]},
+    ]}}
+    sc = parsers.build_scoring_config(raw)
+    assert sc.is_points_league is True
 
 
 # --- numeric coercion ------------------------------------------------------
