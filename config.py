@@ -9,7 +9,11 @@ Environment variables:
                      *default* league; tools also accept a per-call
                      ``league_id`` override for accounts in multiple leagues
                      (validated against the account's own leagues).
-    YAHOO_SPORT      (optional) Yahoo game code; default "mlb".
+    YAHOO_SPORT      (optional) Yahoo game code(s); default "mlb". Accepts a
+                     comma-separated list (e.g. "mlb,nfl") to serve multiple
+                     sports from one deployment — the first is the default
+                     sport. Per-call league_id overrides can target any league
+                     the authenticated account belongs to across these games.
     YAHOO_SEASON     (optional) Season year, e.g. "2026". If unset, the
                      current season is auto-detected at runtime.
     YAHOO_OAUTH_FILE (optional) Path to the OAuth credentials JSON;
@@ -32,10 +36,19 @@ from dataclasses import dataclass
 class Config:
     """Resolved server configuration."""
     league_id: str
-    sport: str = "mlb"
+    sports: tuple[str, ...] = ("mlb",)  # configured Yahoo game codes; [0] is default
     season: int | None = None          # None -> resolve current season at runtime
     oauth_file: str = "oauth2.json"
     allowed_hosts: tuple[str, ...] = ()  # extra Host values for DNS-rebinding allowlist
+
+    @property
+    def default_sport(self) -> str:
+        """The default sport (first configured game code).
+
+        Used when constructing a league key without discovery (the degraded
+        fallback in ``_get_league``) and for the ``yfa.Game`` game-id lookup.
+        """
+        return self.sports[0]
 
 
 def load_config() -> Config:
@@ -59,6 +72,14 @@ def load_config() -> Config:
     else:
         season = None  # auto-detect current season
 
+    # YAHOO_SPORT is a comma-separated list of game codes; blanks trimmed.
+    # Empty/unset -> the single default sport. The first entry is the default.
+    sports = tuple(
+        s.strip().lower()
+        for s in os.environ.get("YAHOO_SPORT", "mlb").split(",")
+        if s.strip()
+    ) or ("mlb",)
+
     default_oauth = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "oauth2.json"
     )
@@ -74,7 +95,7 @@ def load_config() -> Config:
 
     return Config(
         league_id=league_id,
-        sport=os.environ.get("YAHOO_SPORT", "mlb"),
+        sports=sports,
         season=season,
         oauth_file=os.environ.get("YAHOO_OAUTH_FILE", default_oauth),
         allowed_hosts=allowed_hosts,

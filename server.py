@@ -146,18 +146,20 @@ _my_leagues: Optional[list[dict]] = None
 def _get_my_leagues(sc: OAuth2) -> list[dict]:
     """Return the account's leagues (id/key/name/season), fetched once.
 
-    Hits ``users/games/leagues?use_login=1`` (filtered to ``cfg.sport``) and
-    parses it with ``_parse_my_leagues``. Degrades to ``[]`` on failure —
-    callers treat an empty result as "discovery unavailable" and fall back to
-    permissive behavior rather than breaking. The empty result is not cached,
-    so a transient failure is retried on the next call.
+    Hits ``users/games/leagues?use_login=1`` (filtered to ``cfg.sports``) and
+    parses it with ``_parse_my_leagues``. With multiple configured sports the
+    result spans games (e.g. an MLB and an NFL league), each entry carrying its
+    own ``league_key``/``game_code``. Degrades to ``[]`` on failure — callers
+    treat an empty result as "discovery unavailable" and fall back to permissive
+    behavior rather than breaking. The empty result is not cached, so a transient
+    failure is retried on the next call.
     """
     global _my_leagues
     if _my_leagues is not None:
         return _my_leagues
     try:
-        gm = yfa.Game(sc, cfg.sport)
-        raw = gm.yhandler.get_leagues_raw(game_codes=[cfg.sport])
+        gm = yfa.Game(sc, cfg.default_sport)
+        raw = gm.yhandler.get_leagues_raw(game_codes=list(cfg.sports))
         parsed = _parse_my_leagues(raw)
     except Exception as e:
         logger.warning(f"Could not enumerate account leagues: {e}")
@@ -179,15 +181,20 @@ def _get_league(sc: OAuth2, league_id: Optional[str] = None) -> yfa.League:
     downstream helpers (e.g. ``_get_player_ownership``) can reference it
     without reconstructing the key.
 
-    When ``cfg.season`` is set we look the league up within that season; when
-    it is None we construct the key from the current game id, which targets
-    the current season automatically.
+    Multi-sport resolution rides on league discovery: a discovered league's
+    ``league_key`` already encodes the right game (sport) and season, so we
+    prefer it and need no per-call ``sport`` argument. When discovery is
+    unavailable (returns ``[]``) or doesn't carry the target, we fall back to
+    constructing the key from ``cfg.default_sport``'s game id — honoring
+    ``cfg.season`` when pinned, else the current season. That fallback is
+    single-sport by nature: an override for a non-default sport can only be
+    resolved when discovery is working.
     """
     target = league_id or cfg.league_id
+    mine = _get_my_leagues(sc)
 
     # Validate an explicit, non-default override against the account's leagues.
     if league_id is not None and target != cfg.league_id:
-        mine = _get_my_leagues(sc)
         if mine and target not in {lg["league_id"] for lg in mine}:
             available = ", ".join(
                 f'{lg["league_id"]} ({lg["name"]})' for lg in mine
@@ -197,7 +204,22 @@ def _get_league(sc: OAuth2, league_id: Optional[str] = None) -> yfa.League:
                 f"Available: {available}. Use yahoo_list_my_leagues to see them."
             )
 
-    gm = yfa.Game(sc, cfg.sport)
+    # Prefer the discovered league_key — it already carries the correct game
+    # code and season, so the same path resolves an MLB or an NFL league.
+    match = next(
+        (lg for lg in mine if lg["league_id"] == target and lg.get("league_key")),
+        None,
+    )
+    if match is not None:
+        league_key = match["league_key"]
+        gm = yfa.Game(sc, match.get("game_code") or cfg.default_sport)
+        lg = gm.to_league(league_key)
+        lg.league_key = league_key           # stash for later use
+        return lg
+
+    # Discovery unavailable/incomplete: construct the key from the default
+    # sport's game id (single-sport fallback preserving prior behavior).
+    gm = yfa.Game(sc, cfg.default_sport)
     if cfg.season is not None:
         # Season pinned: find the league among that year's leagues.
         for lid in gm.league_ids(year=cfg.season):
