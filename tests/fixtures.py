@@ -116,6 +116,111 @@ SCOREBOARD_RAW = {
     }
 }
 
+# --- points-league (fantasy football) matchup ------------------------------
+# A points league decides the matchup by each team's single fantasy-points
+# total (team_points.total) plus a matchup-level winner_team_key / is_tied --
+# there are NO per-category stat_winners. The team_stats lines are informational
+# only. Uses real NFL stat_ids (Pass Yds=4, Pass TD=5, Rush Yds=9, Rec TD=13).
+# NOTE: assembled on-spec ahead of a drafted NFL league; re-verify the live
+# matchup response shape once one exists.
+
+TEAM_NODE_PTS_3 = [
+    [
+        {"team_key": "470.l.1.t.3"},
+        {"team_id": "3"},
+        {"name": "Gridiron Gophers"},
+        [],
+        {"is_owned_by_current_login": 1},
+    ],
+    {
+        "team_stats": {"coverage_type": "week", "week": "1", "stats": [
+            {"stat": {"stat_id": "4", "value": "312"}},   # Pass Yds
+            {"stat": {"stat_id": "5", "value": "3"}},     # Pass TD
+            {"stat": {"stat_id": "9", "value": "88"}},    # Rush Yds
+            {"stat": {"stat_id": "13", "value": "2"}},    # Rec TD
+        ]},
+        "team_points": {"coverage_type": "week", "week": "1", "total": "112.34"},
+        "team_projected_points": {"coverage_type": "week", "week": "1", "total": "104.90"},
+    },
+]
+
+TEAM_NODE_PTS_8 = [
+    [
+        {"team_key": "470.l.1.t.8"},
+        {"team_id": "8"},
+        {"name": "Turf Titans"},
+        [],
+        {"is_owned_by_current_login": 0},
+    ],
+    {
+        "team_stats": {"coverage_type": "week", "week": "1", "stats": [
+            {"stat": {"stat_id": "4", "value": "245"}},
+            {"stat": {"stat_id": "5", "value": "1"}},
+            {"stat": {"stat_id": "9", "value": "140"}},
+            {"stat": {"stat_id": "13", "value": "1"}},
+        ]},
+        "team_points": {"coverage_type": "week", "week": "1", "total": "98.10"},
+        "team_projected_points": {"coverage_type": "week", "week": "1", "total": "101.20"},
+    },
+]
+
+# Team 3 wins on total points; no stat_winners in a points league.
+MATCHUP_NODE_POINTS = {
+    "week": "1",
+    "week_start": "2026-09-10",
+    "week_end": "2026-09-15",
+    "status": "postevent",
+    "is_playoffs": "0",
+    "is_tied": 0,
+    "winner_team_key": "470.l.1.t.3",
+    "0": {"teams": {
+        "count": 2,
+        "0": {"team": TEAM_NODE_PTS_3},
+        "1": {"team": TEAM_NODE_PTS_8},
+    }},
+}
+
+MATCHUP_RAW_POINTS = {
+    "fantasy_content": {"team": [
+        [{"team_key": "470.l.1.t.3"}, {"team_id": "3"}, {"name": "Gridiron Gophers"}],
+        {"matchups": {"count": 1, "0": {"matchup": MATCHUP_NODE_POINTS}}},
+    ]}
+}
+
+SCOREBOARD_RAW_POINTS = {
+    "fantasy_content": {"league": [
+        {"league_key": "470.l.1", "name": "Test Football League"},
+        {"scoreboard": {"week": "1", "0": {"matchups": {
+            "count": 1, "0": {"matchup": MATCHUP_NODE_POINTS}}}}},
+    ]}
+}
+
+# Points-league standings entries carry points_for / points_against (merged
+# from Yahoo's team_standings by yfa) instead of category totals.
+STANDINGS_LIST_POINTS = [
+    {
+        "team_key": "470.l.1.t.3",
+        "name": "Gridiron Gophers",
+        "rank": "1",
+        "playoff_seed": "1",
+        "outcome_totals": {"wins": "10", "losses": "3", "ties": "0", "percentage": ".769"},
+        "games_back": "-",
+        "points_for": "1543.22",
+        "points_against": "1402.88",
+    },
+    {
+        "team_key": "470.l.1.t.8",
+        "name": "Turf Titans",
+        "rank": "2",
+        "playoff_seed": "2",
+        "outcome_totals": {"wins": "9", "losses": "4", "ties": "0", "percentage": ".692"},
+        "games_back": "1",
+        "points_for": "1498.10",
+        "points_against": "1450.05",
+    },
+]
+
+
 # --- season teams/stats response (league/{key}/teams/stats) -----------------
 # Two teams with season totals; ERA present (lower better), H/AB empty for the
 # season as Yahoo returns it.
@@ -252,6 +357,46 @@ SETTINGS_RAW = {
                 _stat(26, "ERA", "0"),                       # lower is better
                 _stat(27, "WHIP", "0"),                      # lower is better
             ]}}]},
+        ]
+    }
+}
+
+
+# --- points-league settings (fantasy football) -----------------------------
+# A points league prices each stat via a stat_modifiers block, which a
+# categories league lacks -- the signal build_scoring_config keys is_points_league
+# on (scoring_type == "point" is the other authoritative signal). Uses real NFL
+# stat_ids/names sourced from the Yahoo `nfl` game stat_categories resource
+# (game 470): Pass Yds=4, Pass TD=5, Int=6, Rush Yds=9, Rush TD=10, Rec Yds=12,
+# Rec TD=13, Fum Lost=18. NOTE: assembled on-spec ahead of a drafted NFL league;
+# re-verify the live matchup/settings shape once a real league exists.
+
+def _modifier(stat_id, value):
+    return {"stat": {"stat_id": stat_id, "value": value}}
+
+
+SETTINGS_RAW_POINTS = {
+    "fantasy_content": {
+        "league": [
+            {"league_key": "470.l.1", "name": "Test Football League",
+             "game_code": "nfl", "scoring_type": "head"},
+            {"settings": [{
+                "stat_categories": {"stats": [
+                    _stat(4, "Pass Yds", "1"),
+                    _stat(5, "Pass TD", "1"),
+                    _stat(6, "Int", "1"),
+                    _stat(9, "Rush Yds", "1"),
+                    _stat(10, "Rush TD", "1"),
+                    _stat(12, "Rec Yds", "1"),
+                    _stat(13, "Rec TD", "1"),
+                    _stat(18, "Fum Lost", "1"),
+                ]},
+                "stat_modifiers": {"stats": [
+                    _modifier(4, "0.04"), _modifier(5, "4"), _modifier(6, "-1"),
+                    _modifier(9, "0.1"), _modifier(10, "6"), _modifier(12, "0.1"),
+                    _modifier(13, "6"), _modifier(18, "-2"),
+                ]},
+            }]},
         ]
     }
 }

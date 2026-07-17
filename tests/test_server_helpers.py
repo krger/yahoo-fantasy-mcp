@@ -6,7 +6,72 @@ calls ``load_config()`` at import) works without real config. No network
 happens at import — the Yahoo session/league are built lazily in the handlers.
 """
 
+import pytest
+
 import server
+
+# --- league resolution (multi-sport, discovery-driven) --------------------
+#
+# _get_league prefers a discovered league_key (which already encodes the right
+# game/season) so one server resolves MLB and NFL leagues alike, and validates
+# an explicit override against the account's own leagues. These fakes stand in
+# for yfa.Game so the resolution logic is exercised without any network.
+
+
+class _FakeGame:
+    """Minimal stand-in for yfa.Game: records the game code it was built with
+    and hands back a fake League from to_league(); the fallback path uses
+    league_ids()/game_id()."""
+
+    def __init__(self, sc, code):
+        self.code = code
+
+    def to_league(self, league_key):
+        lg = type("_FakeLeague", (), {})()
+        lg._from_game_code = self.code  # so tests can assert the resolving game
+        return lg
+
+    def league_ids(self, year=None):
+        return []
+
+    def game_id(self):
+        return "999"
+
+
+_MINE = [
+    {"league_id": "12345", "league_key": "458.l.12345", "name": "MLB", "game_code": "mlb"},
+    {"league_id": "70000", "league_key": "470.l.70000", "name": "NFL", "game_code": "nfl"},
+]
+
+
+def test_get_league_prefers_discovered_key(monkeypatch):
+    # An NFL override resolves via the discovered league_key + its game_code —
+    # no per-call sport argument, no default-sport assumption.
+    monkeypatch.setattr(server, "_get_my_leagues", lambda sc: _MINE)
+    monkeypatch.setattr(server.yfa, "Game", _FakeGame)
+    lg = server._get_league(None, "70000")
+    assert lg.league_key == "470.l.70000"
+    assert lg._from_game_code == "nfl"
+
+
+def test_get_league_rejects_unknown_override(monkeypatch):
+    # An explicit override outside the account's leagues is rejected.
+    monkeypatch.setattr(server, "_get_my_leagues", lambda sc: _MINE)
+    monkeypatch.setattr(server.yfa, "Game", _FakeGame)
+    with pytest.raises(ValueError):
+        server._get_league(None, "99999")
+
+
+def test_get_league_falls_back_when_discovery_empty(monkeypatch):
+    # Discovery unavailable ([]): construct the key from the default sport's
+    # current game id rather than blocking (single-sport fallback). cfg.league_id
+    # is the conftest dummy "12345".
+    monkeypatch.setattr(server, "_get_my_leagues", lambda sc: [])
+    monkeypatch.setattr(server.yfa, "Game", _FakeGame)
+    lg = server._get_league(None, None)
+    assert lg.league_key == "999.l.12345"
+    assert lg._from_game_code == "mlb"
+
 
 # --- free-agent sort resolution -------------------------------------------
 
@@ -59,6 +124,46 @@ def test_resolve_sort_underscore_named_sort():
     # O_AR (opponent acquisition rank) is a verbatim named sort, not a stat id.
     assert server._resolve_sort("O_AR") == ("O_AR", False)
     assert server._resolve_sort("o_ar") == ("O_AR", False)
+
+
+def test_resolve_sort_league_label_fallback_is_sport_neutral():
+    # A football league's category labels resolve via the ScoringConfig
+    # fallback (case-insensitive), with no hard-coded per-sport table.
+    import yahoo_parsers as parsers
+    from tests import fixtures as fx
+    pts = parsers.build_scoring_config(fx.SETTINGS_RAW_POINTS)
+    assert server._resolve_sort("Pass Yds", pts) == ("4", True)
+    assert server._resolve_sort("rec td", pts) == ("13", True)
+    # Without a scoring config, an unknown key still passes through uppercased.
+    assert server._resolve_sort("Pass Yds") == ("PASS YDS", False)
+
+
+def test_resolve_sort_baseball_table_wins_over_league_fallback():
+    # The static baseball table takes precedence, so existing baseball aliases
+    # are unchanged even when a scoring config is passed (K -> 21, not the
+    # league's pitcher-K stat id).
+    import yahoo_parsers as parsers
+    from tests import fixtures as fx
+    mlb = parsers.build_scoring_config(fx.SETTINGS_RAW)
+    assert server._resolve_sort("K", mlb) == ("21", True)
+
+
+# --- player formatting (sport-neutral pro_team output) --------------------
+
+def test_format_player_emits_pro_team_not_sport_specific_key():
+    # _format_player surfaces Yahoo's editorial_team_abbr under the neutral
+    # key pro_team (v2 rename), so the output reads correctly for any sport.
+    out = server._format_player({
+        "name": "Patrick Mahomes",
+        "editorial_team_abbr": "KC",
+        "player_id": "5",
+        "eligible_positions": ["QB"],
+    })
+    assert out["pro_team"] == "KC"
+    assert out["name"] == "Patrick Mahomes"
+    # the old/sport-specific keys must not leak into the output contract
+    assert "editorial_team_abbr" not in out
+    assert "mlb_team" not in out
 
 
 # --- error formatting ------------------------------------------------------

@@ -27,6 +27,26 @@ _LEAGUE_ID_DESC = (
 # leagues when league discovery succeeds — see _get_league).
 _LEAGUE_ID_PATTERN = r"^\d+$"
 
+# Sport-neutral position and sort help, shared across the player-collection
+# tools. Position codes and stat abbreviations differ by sport, so these give
+# examples for both baseball and football rather than assuming one.
+_POSITION_DESC = (
+    "Filter by position using your league's position codes. Baseball: C, 1B, "
+    "2B, 3B, SS, OF, Util, SP, RP. Football: QB, RB, WR, TE, K, DEF (plus flex "
+    "W/R/T). If omitted, returns all positions."
+)
+_SORT_DESC = (
+    "Sort order. Named values Yahoo accepts verbatim: AR (actual rank, "
+    "default), OR (overall rank), NAME, PTS, O_AR. Stat abbreviations translate "
+    "to Yahoo stat IDs server-side — baseball has a built-in table (R, H, HR, "
+    "RBI, SB, BB, K, AVG, OBP, SLG, OPS, TB, 2B, 3B; IP, W, L, SV, BS, HLD, "
+    "ERA, WHIP, K9), and any league's own category labels also resolve (e.g. "
+    "football 'Pass Yds', 'Rec TD'). A numeric Yahoo stat ID (e.g. '7') always "
+    "works. Note: PTS returns no results in a head-to-head *categories* league "
+    "(e.g. this baseball league) — sort by AR or a stat there — but is the "
+    "natural sort in a *points* league (typical fantasy football)."
+)
+
 
 class LeagueScopedInput(BaseModel):
     """Base for tools that operate on a single league.
@@ -95,27 +115,8 @@ class GetRosterInput(LeagueScopedInput):
 class SearchFreeAgentsInput(LeagueScopedInput):
     """Input for searching free agents."""
 
-    position: Optional[str] = Field(
-        default=None,
-        description=(
-            "Filter by position. Examples: C, 1B, 2B, 3B, SS, OF, Util, SP, RP. "
-            "If omitted, returns all positions."
-        ),
-    )
-    sort: Optional[str] = Field(
-        default="AR",
-        description=(
-            "Sort order. Named values Yahoo accepts: AR (actual rank, default), "
-            "OR (overall rank), NAME, PTS, O_AR. Stat abbreviations are "
-            "translated to Yahoo stat IDs server-side — supported: R, H, HR, "
-            "RBI, SB, BB, K, AVG, OBP, SLG, OPS, TB, 2B, 3B (hitting); IP, W, "
-            "L, SV, BS, HLD, ERA, WHIP, K9 (pitching). You may also pass a "
-            "numeric Yahoo stat ID directly (e.g. '7' for Runs). "
-            "Note: PTS (fantasy points) returns no results in this "
-            "head-to-head categories league — Yahoo computes no points "
-            "ranking here; use a category like AR or a stat sort instead."
-        ),
-    )
+    position: Optional[str] = Field(default=None, description=_POSITION_DESC)
+    sort: Optional[str] = Field(default="AR", description=_SORT_DESC)
     count: Optional[int] = Field(
         default=25,
         description="Number of results to return (default 25, max 50).",
@@ -144,22 +145,8 @@ class SearchFreeAgentsInput(LeagueScopedInput):
 class GetWaiversInput(LeagueScopedInput):
     """Input for listing players currently on waivers."""
 
-    position: Optional[str] = Field(
-        default=None,
-        description=(
-            "Filter by position. Examples: C, 1B, 2B, 3B, SS, OF, Util, SP, RP. "
-            "If omitted, returns all positions."
-        ),
-    )
-    sort: Optional[str] = Field(
-        default="AR",
-        description=(
-            "Sort order. Named values: AR (actual rank, default), OR, NAME, "
-            "O_AR. Stat abbreviations (R, HR, RBI, SB, AVG, W, SV, K, ERA, "
-            "WHIP, ...) translate to Yahoo stat IDs server-side; a numeric "
-            "stat ID also works. PTS returns nothing in this categories league."
-        ),
-    )
+    position: Optional[str] = Field(default=None, description=_POSITION_DESC)
+    sort: Optional[str] = Field(default="AR", description=_SORT_DESC)
     count: Optional[int] = Field(
         default=25,
         description="Number of results to return (default 25, max 50).",
@@ -180,22 +167,8 @@ class GetWaiversInput(LeagueScopedInput):
 class GetTakenPlayersInput(LeagueScopedInput):
     """Input for listing all rostered (taken) players across the league."""
 
-    position: Optional[str] = Field(
-        default=None,
-        description=(
-            "Filter by position. Examples: C, 1B, 2B, 3B, SS, OF, Util, SP, RP. "
-            "If omitted, returns all positions."
-        ),
-    )
-    sort: Optional[str] = Field(
-        default="AR",
-        description=(
-            "Sort order. Named values: AR (actual rank, default), OR, NAME, "
-            "O_AR. Stat abbreviations (R, HR, RBI, SB, AVG, W, SV, K, ERA, "
-            "WHIP, ...) translate to Yahoo stat IDs server-side; a numeric "
-            "stat ID also works. PTS returns nothing in this categories league."
-        ),
-    )
+    position: Optional[str] = Field(default=None, description=_POSITION_DESC)
+    sort: Optional[str] = Field(default="AR", description=_SORT_DESC)
     count: Optional[int] = Field(
         default=300,
         description=(
@@ -220,7 +193,7 @@ class GetPlayerStatsInput(LeagueScopedInput):
 
     player_name: str = Field(
         ...,
-        description="Full or partial player name to search for (e.g. 'Ohtani', 'Juan Soto').",
+        description="Full or partial player name to search for (e.g. 'Ohtani', 'Mahomes').",
         min_length=2,
         max_length=100,
     )
@@ -231,7 +204,7 @@ class GetPlayerOwnershipInput(LeagueScopedInput):
 
     player_name: str = Field(
         ...,
-        description="Full or partial player name to look up (e.g. 'Ohtani', 'Juan Soto').",
+        description="Full or partial player name to look up (e.g. 'Ohtani', 'Mahomes').",
         min_length=2,
         max_length=100,
     )
@@ -319,6 +292,6 @@ class GetPlayerNotesInput(LeagueScopedInput):
 
     player_name: str = Field(
         ...,
-        description="Full or partial player name. A player_key (e.g. 'mlb.p.12345') is also accepted.",
+        description="Full or partial player name. A player_key (e.g. 'mlb.p.12345', 'nfl.p.12345') is also accepted.",
         min_length=1,
     )

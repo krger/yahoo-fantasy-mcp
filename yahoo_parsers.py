@@ -30,10 +30,18 @@ class ScoringConfig:
     - ``scored_stat_ids``: the scored categories in display order (informational
       stats like IP / H-AB excluded); used for standings season-total ranking.
     - ``lower_is_better``: stat_ids where a lower value ranks higher (ERA/WHIP).
+    - ``is_points_league``: True for a head-to-head/season **points** league
+      (fantasy football's usual format), where the matchup is decided by a
+      single fantasy-points total rather than per-category wins. Detected from
+      the league settings (presence of ``stat_modifiers`` / a ``point``
+      scoring type). Consumers use it to pick the points vs categories framing
+      for matchups and standings; the per-category ``scored_stat_ids`` ranking
+      is meaningful only for a categories league.
     """
     stat_id_to_name: dict[str, str]
     scored_stat_ids: list[str]
     lower_is_better: frozenset[str]
+    is_points_league: bool = False
 
     def label(self, stat_id: str) -> str:
         """Display label for a stat_id, falling back to the id itself."""
@@ -56,14 +64,26 @@ def build_scoring_config(raw_settings: dict) -> ScoringConfig:
     better (ERA/WHIP); ``is_only_display_stat`` is ``"1"`` for informational
     categories (e.g. IP, H/AB) that are shown but not scored. Degrades to
     ``ScoringConfig.empty()`` if the expected shape is absent.
+
+    Points-league detection: a points league (typical fantasy football) assigns
+    a point value to each stat, so its settings carry a ``stat_modifiers.stats``
+    block that a categories league lacks; ``scoring_type`` (on the league meta,
+    ``league[0]``) is also authoritative when it is ``"point"``. Either signal
+    marks ``is_points_league``.
     """
     league = raw_settings.get("fantasy_content", {}).get("league", [])
+    meta = league[0] if league and isinstance(league[0], dict) else {}
     settings = league[1].get("settings") if len(league) > 1 else None
     if isinstance(settings, list):
         settings = settings[0] if settings else {}
     if not isinstance(settings, dict):
         return ScoringConfig.empty()
     stats = settings.get("stat_categories", {}).get("stats", [])
+
+    # A points league prices each stat via stat_modifiers (a categories league
+    # has none); scoring_type == "point" is the other authoritative signal.
+    has_modifiers = bool(settings.get("stat_modifiers", {}).get("stats"))
+    is_points = has_modifiers or meta.get("scoring_type") == "point"
 
     names: dict[str, str] = {}
     scored: list[str] = []
@@ -84,6 +104,7 @@ def build_scoring_config(raw_settings: dict) -> ScoringConfig:
         stat_id_to_name=names,
         scored_stat_ids=scored,
         lower_is_better=frozenset(lower),
+        is_points_league=is_points,
     )
 
 
@@ -209,6 +230,7 @@ def _extract_team_summary(team_node: list) -> dict:
 
     stats = {}
     points = None
+    projected = None
     for part in team_node[1:]:
         if not isinstance(part, dict):
             continue
@@ -219,12 +241,19 @@ def _extract_team_summary(team_node: list) -> dict:
                     stats[str(st["stat_id"])] = st.get("value")
         if "team_points" in part:
             points = part["team_points"].get("total")
+        # Present in points-league (football) matchups; None for categories.
+        if "team_projected_points" in part:
+            projected = part["team_projected_points"].get("total")
 
     return {
         "team_key": info.get("team_key"),
         "name": info.get("name", "Unknown"),
         "stats": stats,
+        # In a categories league this is the count of categories won; in a
+        # points league it is the fantasy-points total. The points-league
+        # framing re-surfaces it as ``points``.
         "category_points": points,
+        "projected_points": projected,
     }
 
 
@@ -243,14 +272,14 @@ def _parse_matchup_node(
     ``opponent`` with a ``result`` (win/loss/tie) per category. Without it, the
     framing is neutral: a ``teams`` list and per-category ``values`` keyed by
     team_key plus the winning team_key.
-    """
-    # Winner of each scored category, keyed by stat_id ("tie" when tied).
-    winners = {}
-    for entry in matchup.get("stat_winners", []):
-        sw = entry.get("stat_winner", {})
-        sid = str(sw.get("stat_id"))
-        winners[sid] = "tie" if sw.get("is_tied") else sw.get("winner_team_key")
 
+    Scoring-model aware: a **points** league (``scoring.is_points_league`` —
+    fantasy football's usual format) is decided by a single fantasy-points total
+    rather than per-category wins, so it takes a distinct framing built by
+    ``_points_matchup_node`` (each result tagged ``scoring: "points"``). A
+    categories league keeps the per-category win/loss framing (tagged
+    ``scoring: "categories"``).
+    """
     teams_coll = matchup.get("0", {}).get("teams", {})
     summaries = []
     for key, val in teams_coll.items():
@@ -265,6 +294,16 @@ def _parse_matchup_node(
         "status": matchup.get("status"),
         "is_playoffs": matchup.get("is_playoffs") == "1",
     }
+
+    if scoring.is_points_league:
+        return _points_matchup_node(matchup, summaries, meta, scoring, perspective_team_key)
+
+    # Winner of each scored category, keyed by stat_id ("tie" when tied).
+    winners = {}
+    for entry in matchup.get("stat_winners", []):
+        sw = entry.get("stat_winner", {})
+        sid = str(sw.get("stat_id"))
+        winners[sid] = "tie" if sw.get("is_tied") else sw.get("winner_team_key")
 
     def _team_info(s):
         return {
@@ -298,7 +337,8 @@ def _parse_matchup_node(
                 "scored": sid in winners,
                 "result": result,
             })
-        return {**meta, "team": _team_info(me), "opponent": _team_info(opp),
+        return {**meta, "scoring": "categories",
+                "team": _team_info(me), "opponent": _team_info(opp),
                 "categories": categories}
 
     # Neutral framing for the scoreboard (no single perspective team).
@@ -317,7 +357,84 @@ def _parse_matchup_node(
             "winner": winners.get(sid),  # team_key, "tie", or None (info stat)
             "scored": sid in winners,
         })
-    return {**meta, "teams": [_team_info(a), _team_info(b)], "categories": categories}
+    return {**meta, "scoring": "categories",
+            "teams": [_team_info(a), _team_info(b)], "categories": categories}
+
+
+def _points_matchup_node(
+    matchup: dict,
+    summaries: list,
+    meta: dict,
+    scoring: ScoringConfig,
+    perspective_team_key: Optional[str],
+) -> dict:
+    """Points-league (fantasy football) framing of one matchup node.
+
+    A points league is decided by each team's single fantasy-points total, not
+    per-category wins, so the winner comes from the matchup-level
+    ``winner_team_key`` / ``is_tied`` rather than ``stat_winners``. The
+    individual stat lines are still surfaced, but as informational ``stat_lines``
+    (there is no per-stat win/loss). Mirrors ``_parse_matchup_node``'s two
+    framings: team-vs-opponent when ``perspective_team_key`` is set, else a
+    neutral ``teams`` list for the scoreboard.
+    """
+    winner_key = matchup.get("winner_team_key")
+    is_tied = str(matchup.get("is_tied")) == "1"
+
+    def _team_info(s):
+        return {
+            "team_key": s["team_key"],
+            "name": s["name"],
+            "points": _to_number(s["category_points"]),
+            "projected_points": _to_number(s["projected_points"])
+            if s.get("projected_points") is not None else None,
+        }
+
+    if perspective_team_key is not None:
+        me = next((s for s in summaries if s["team_key"] == perspective_team_key), None)
+        opp = next((s for s in summaries if s["team_key"] != perspective_team_key), None)
+        if me is None or opp is None:
+            raise ValueError("Could not resolve both teams in matchup")
+        if is_tied:
+            result = "tie"
+        elif winner_key == me["team_key"]:
+            result = "win"
+        elif winner_key == opp["team_key"]:
+            result = "loss"
+        else:
+            result = None  # not yet decided (in-progress week with no winner)
+        stat_lines = [
+            {
+                "stat": scoring.label(sid),
+                "stat_id": sid,
+                "team": value,
+                "opponent": opp["stats"].get(sid),
+            }
+            for sid, value in me["stats"].items()
+        ]
+        return {**meta, "scoring": "points",
+                "team": _team_info(me), "opponent": _team_info(opp),
+                "result": result, "stat_lines": stat_lines}
+
+    # Neutral framing for the scoreboard (no single perspective team).
+    if len(summaries) < 2:
+        raise ValueError("Matchup is missing one or both teams")
+    a, b = summaries[0], summaries[1]
+    winner = "tie" if is_tied else winner_key  # team_key, "tie", or None
+    stat_lines = [
+        {
+            "stat": scoring.label(sid),
+            "stat_id": sid,
+            "values": {
+                a["team_key"]: a["stats"].get(sid),
+                b["team_key"]: b["stats"].get(sid),
+            },
+        }
+        for sid in a["stats"]
+    ]
+    return {**meta, "scoring": "points",
+            "teams": [_team_info(a), _team_info(b)], "winner": winner,
+            "stat_lines": stat_lines}
 
 
 def _parse_matchup(raw: dict, my_team_key: str, scoring: ScoringConfig) -> dict:
@@ -416,7 +533,10 @@ def _parse_standings(standings: list, season_categories: Optional[dict] = None) 
     The standings feed carries only season records/ranks, so this coerces the
     stringified numbers and structures each team's record. When
     ``season_categories`` (``{team_key: [category...]}``) is supplied, each
-    team's season category totals are merged in under ``categories``.
+    team's season category totals are merged in under ``categories`` (categories
+    leagues only). A **points** league (fantasy football) instead carries
+    ``points_for`` / ``points_against`` on each standings entry (Yahoo's
+    ``team_standings``); those are surfaced when present.
     """
     out = []
     for entry in standings:
@@ -436,6 +556,11 @@ def _parse_standings(standings: list, season_categories: Optional[dict] = None) 
             },
             "games_back": None if gb in ("-", "", None) else _to_number(gb),
         }
+        # Points-league totals (present only when Yahoo supplies them).
+        if "points_for" in entry:
+            row["points_for"] = _to_number(entry.get("points_for"))
+        if "points_against" in entry:
+            row["points_against"] = _to_number(entry.get("points_against"))
         if season_categories is not None:
             row["categories"] = season_categories.get(team_key, [])
         out.append(row)
