@@ -126,6 +126,28 @@ def test_resolve_sort_underscore_named_sort():
     assert server._resolve_sort("o_ar") == ("O_AR", False)
 
 
+def test_resolve_sort_league_label_fallback_is_sport_neutral():
+    # A football league's category labels resolve via the ScoringConfig
+    # fallback (case-insensitive), with no hard-coded per-sport table.
+    import yahoo_parsers as parsers
+    from tests import fixtures as fx
+    pts = parsers.build_scoring_config(fx.SETTINGS_RAW_POINTS)
+    assert server._resolve_sort("Pass Yds", pts) == ("4", True)
+    assert server._resolve_sort("rec td", pts) == ("13", True)
+    # Without a scoring config, an unknown key still passes through uppercased.
+    assert server._resolve_sort("Pass Yds") == ("PASS YDS", False)
+
+
+def test_resolve_sort_baseball_table_wins_over_league_fallback():
+    # The static baseball table takes precedence, so existing baseball aliases
+    # are unchanged even when a scoring config is passed (K -> 21, not the
+    # league's pitcher-K stat id).
+    import yahoo_parsers as parsers
+    from tests import fixtures as fx
+    mlb = parsers.build_scoring_config(fx.SETTINGS_RAW)
+    assert server._resolve_sort("K", mlb) == ("21", True)
+
+
 # --- player formatting (sport-neutral pro_team output) --------------------
 
 def test_format_player_emits_pro_team_not_sport_specific_key():

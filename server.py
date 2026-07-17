@@ -1,8 +1,10 @@
 """
-Yahoo Fantasy Baseball MCP Server
+Yahoo Fantasy MCP Server
 
-A read-only MCP server that exposes Yahoo Fantasy Baseball data over a
-remote, streamable-HTTP MCP endpoint at /mcp (served by uvicorn).
+A read-only MCP server that exposes Yahoo Fantasy Sports data (baseball,
+football, ...) over a remote, streamable-HTTP MCP endpoint at /mcp (served by
+uvicorn). Sport-specific framing (e.g. categories vs points scoring) is derived
+from each league's own settings at runtime, so the tools adapt to the league.
 
 Tools:
     - yahoo_get_roster: View any team's roster in the league
@@ -331,9 +333,13 @@ def _format_player(player: dict) -> dict:
 #   count=N                  (Yahoo caps at 25 per page)
 #   start=N                  (pagination offset)
 
-# Stat-name -> Yahoo stat ID. Covers the categories this tool advertises plus
-# a few common extras. Batter K and pitcher K share the abbreviation but
-# different IDs; Yahoo disambiguates by the player's position context.
+# Stat-name -> Yahoo stat ID (baseball). Covers the categories this tool
+# advertises plus a few common extras. Batter K and pitcher K share the
+# abbreviation but different IDs; Yahoo disambiguates by the player's position
+# context. This table stays baseball-specific on purpose: other sports resolve
+# their own category labels via the league-derived ScoringConfig fallback in
+# _resolve_sort (so a football league's "Pass Yds"/"Rec TD" sort without a
+# hard-coded per-sport table), and a numeric stat ID always works for any sport.
 _STAT_NAME_TO_ID = {
     # Hitting
     "R": "7", "H": "8", "2B": "10", "3B": "11", "HR": "12", "RBI": "13",
@@ -348,12 +354,21 @@ _STAT_NAME_TO_ID = {
 _NAMED_SORTS = {"AR", "OR", "NAME", "PTS", "O_AR"}
 
 
-def _resolve_sort(sort_key: Optional[str]) -> tuple[Optional[str], bool]:
+def _resolve_sort(
+    sort_key: Optional[str], scoring: Optional[ScoringConfig] = None
+) -> tuple[Optional[str], bool]:
     """Translate a user-provided sort key to a Yahoo-valid value.
 
     Returns (yahoo_sort_value, is_stat_id). ``is_stat_id`` is True when the
     resolved value is a numeric stat ID, which means the caller also needs
     to include sort_type / sort_season in the request.
+
+    Resolution order: verbatim named sorts (AR/OR/…), then a numeric stat ID,
+    then the baseball ``_STAT_NAME_TO_ID`` aliases, then — when a ``scoring``
+    config is supplied — the league's own category labels. That last,
+    sport-neutral fallback lets a football league sort by its stat labels
+    (e.g. ``"Pass Yds"``) without a hard-coded per-sport table, while leaving
+    baseball's resolution unchanged (its aliases match earlier).
     """
     if not sort_key:
         return None, False
@@ -364,6 +379,13 @@ def _resolve_sort(sort_key: Optional[str]) -> tuple[Optional[str], bool]:
         return key, True
     if key in _STAT_NAME_TO_ID:
         return _STAT_NAME_TO_ID[key], True
+    # Sport-neutral fallback: match the league's own category labels (from the
+    # league-derived ScoringConfig). Covers any sport's scored/informational
+    # stats, so football category sorts work with no per-sport alias table.
+    if scoring is not None:
+        for sid, label in scoring.stat_id_to_name.items():
+            if label.upper() == key:
+                return sid, True
     # Unknown key: pass through and let Yahoo decide (it will usually fall
     # back to AR ordering). Logged so the caller can diagnose.
     logger.warning(f"Unknown sort key '{sort_key}'; passing to Yahoo as-is")
@@ -391,7 +413,7 @@ def _fetch_free_agents_raw(
     requested inline — taken-player listings add ``ownership`` to surface the
     owning fantasy team, which free agents/waivers lack.
     """
-    sort_value, is_stat_id = _resolve_sort(sort)
+    sort_value, is_stat_id = _resolve_sort(sort, scoring)
 
     # Yahoo's per-page cap is 25. Paginate if the caller asked for more.
     PAGE = 25
@@ -670,9 +692,9 @@ mcp = FastMCP(
     },
 )
 async def yahoo_get_roster(params: GetRosterInput) -> str:
-    """Get the roster for a team in the fantasy baseball league.
+    """Get the roster for a team in the fantasy league.
 
-    Returns each player's name, position, eligible positions, MLB team,
+    Returns each player's name, position, eligible positions, pro team,
     and injury status. Use team_number to view another manager's roster,
     or omit it for your own. Pass 'day' (YYYY-MM-DD) to see the roster
     as set for a specific date (past or future), or 'week' for a scoring
@@ -864,23 +886,26 @@ async def yahoo_search_free_agents(params: SearchFreeAgentsInput) -> str:
     """Search for available free agents in the league.
 
     Filter by position and sort by various stat categories to find
-    pickup targets. Returns player name, positions, MLB team, ownership
+    pickup targets. Returns player name, positions, pro team, ownership
     percentage, and a ``stats`` map of the player's season totals per
-    scoring category (hitters get R/HR/RBI/SB/AVG, pitchers W/SV/K/ERA/WHIP).
+    scoring category (derived from the league's own settings — e.g. baseball
+    R/HR/RBI/SB/AVG and W/SV/K/ERA/WHIP, or football passing/rushing/receiving
+    yards and TDs).
 
     Args:
         params (SearchFreeAgentsInput): Validated input containing:
-            - position (Optional[str]): Position filter (C, 1B, 2B, 3B, SS,
-              OF, Util, SP, RP). If omitted, returns all positions.
+            - position (Optional[str]): Position filter using the league's
+              position codes (baseball: C, 1B, ..., SP, RP; football: QB, RB,
+              WR, TE, K, DEF). If omitted, returns all positions.
             - sort (Optional[str]): Sort key. Named values Yahoo accepts
               verbatim: AR (actual rank, default), OR (overall rank), NAME,
-              PTS, O_AR. Stat abbreviations are translated to Yahoo stat
-              IDs server-side — hitting: R, H, HR, RBI, SB, BB, K, AVG,
-              OBP, SLG, OPS, TB, 2B, 3B; pitching: IP, W, L, SV, BS, HLD,
-              ERA, WHIP, K9. A numeric Yahoo stat ID (e.g. '7' for Runs)
-              may also be passed directly. Note: PTS returns no results in
-              this categories league (Yahoo has no fantasy-points ranking
-              here) — sort by AR or a stat instead.
+              PTS, O_AR. Baseball stat abbreviations translate to Yahoo stat
+              IDs server-side, and any league's own category labels also
+              resolve (e.g. football 'Pass Yds', 'Rec TD'); a numeric Yahoo
+              stat ID always works. Note: PTS returns no results in a
+              head-to-head *categories* league (e.g. baseball) — sort by AR
+              or a stat there — but is the natural sort in a *points* league
+              (typical football).
             - count (Optional[int]): Number of results (default 25, max 50).
               Yahoo caps each request at 25 players, so larger counts
               paginate automatically.
@@ -943,12 +968,13 @@ async def yahoo_get_waivers(params: GetWaiversInput) -> str:
     addable free agents (``yahoo_search_free_agents``). Surfacing them lets
     you spot a just-dropped useful player before he clears and time a claim
     (place the claim in the Yahoo UI — this server is read-only). Returns the
-    same per-player shape as the free-agent search: name, positions, MLB
+    same per-player shape as the free-agent search: name, positions, pro
     team, percent owned, and a ``stats`` map of season category totals.
 
     Args:
         params (GetWaiversInput): Validated input containing:
-            - position (Optional[str]): Position filter (C, 1B, ..., SP, RP).
+            - position (Optional[str]): Position filter (league's position
+              codes, e.g. SP/RP or QB/RB/WR).
             - sort (Optional[str]): Sort key (AR default, or a stat — same
               vocabulary as yahoo_search_free_agents).
             - count (Optional[int]): Number of results (default 25, max 50).
@@ -1008,14 +1034,15 @@ async def yahoo_get_taken_players(params: GetTakenPlayersInput) -> str:
     each annotated with the fantasy team that holds them (``ownership``:
     ``owner_team_key`` / ``owner_team_name``) — a league-wide ownership map
     no other tool produces. Use it to find trade targets by category need
-    (e.g. who holds the closers/SB sources in a categories league) without
+    (e.g. who holds the closers/SB sources, or the RB depth) without
     fetching all teams' rosters one by one. Each player also carries
-    positions, MLB team, percent owned, and a ``stats`` map of season
+    positions, pro team, percent owned, and a ``stats`` map of season
     category totals.
 
     Args:
         params (GetTakenPlayersInput): Validated input containing:
-            - position (Optional[str]): Position filter (C, 1B, ..., SP, RP).
+            - position (Optional[str]): Position filter (league's position
+              codes, e.g. SP/RP or QB/RB/WR).
             - sort (Optional[str]): Sort key (AR default, or a stat — same
               vocabulary as yahoo_search_free_agents).
             - count (Optional[int]): Number of results (default 300 to cover
@@ -1075,7 +1102,7 @@ async def yahoo_get_player_stats(params: GetPlayerStatsInput) -> str:
 
     Searches across all players (rostered and free agents) by name.
     Returns stats, ownership info (including which fantasy team owns them),
-    eligible positions, and MLB team.
+    eligible positions, and pro team.
 
     Args:
         params (GetPlayerStatsInput): Validated input containing:
@@ -1175,7 +1202,7 @@ async def yahoo_get_player_ownership(params: GetPlayerOwnershipInput) -> str:
             - player_name (str): Full or partial player name to look up.
 
     Returns:
-        str: JSON object with player name, MLB team, and ownership details
+        str: JSON object with player name, pro team, and ownership details
              (owner team name/key if rostered, or availability status).
     """
     try:
@@ -1693,7 +1720,7 @@ def _resolve_player_key(lg: "yfa.League", name_or_key: str) -> Optional[str]:
     pid = first.get("player_id")
     if pid is None:
         return None
-    # Yahoo MLB player_key format: <game_code>.p.<player_id>
+    # Yahoo player_key format: <game_code>.p.<player_id> (game_code from the league key)
     game_code = lg.league_key.split(".")[0] if "." in lg.league_key else "mlb"
     return f"{game_code}.p.{pid}"
 
@@ -1939,15 +1966,18 @@ async def yahoo_get_player_notes(params: GetPlayerNotesInput) -> str:
 
 @mcp.prompt(title="Analyze my matchup")
 def analyze_matchup(team_number: str = "") -> str:
-    """Summarize the current head-to-head matchup: categories won/lost/tied."""
+    """Summarize the current head-to-head matchup (categories or points)."""
     whose = f"team {team_number}" if team_number else "my team"
     arg = f" with team_number={team_number}" if team_number else ""
     return (
         f"Analyze {whose}'s current head-to-head matchup. Call yahoo_get_matchup{arg}. "
-        "Summarize which scoring categories are being won, lost, and tied, with the "
-        "current values and margins. Call out the closest categories and any that "
-        "look effectively decided, then give the projected category score and a "
-        "sentence on where the matchup will be won or lost. "
+        "The result's `scoring` field says how the league is scored. If "
+        "`categories`: summarize which scoring categories are being won, lost, and "
+        "tied, with current values and margins, call out the closest and the "
+        "effectively-decided ones, and give the projected category score. If "
+        "`points`: report both teams' fantasy-points totals (and projected_points), "
+        "the current margin, and whether it's a likely win, loss, or tossup. "
+        "Finish with one sentence on where the matchup will be won or lost. "
         "If I mention a specific league, call yahoo_list_my_leagues first and pass "
         "the matching league_id to the tools."
     )
@@ -1960,14 +1990,18 @@ def waiver_help(team_number: str = "") -> str:
     arg = f" with team_number={team_number}" if team_number else ""
     return (
         f"Help me find waiver pickups for {whose}.\n"
-        f"1. Call yahoo_get_matchup{arg} and identify the scoring categories I'm "
-        "losing or only narrowly winning.\n"
-        "2. For each weak category, call yahoo_search_free_agents sorted by the "
-        "relevant stat with time_period=lastweek to surface players in good recent "
-        "form (e.g. sort=SB for steals, sort=K for pitcher strikeouts, sort=HR for "
-        "power).\n"
-        "3. Recommend 3-5 available players who would most improve my weak "
-        "categories, each with a one-line rationale and their recent numbers.\n"
+        f"1. Call yahoo_get_matchup{arg} and note the `scoring` field.\n"
+        "2. If a categories league: identify the scoring categories I'm losing or "
+        "only narrowly winning, then for each weak category call "
+        "yahoo_search_free_agents sorted by that category's stat with "
+        "time_period=lastweek to surface players in good recent form (e.g. sort=SB "
+        "for steals, sort=HR for power, or the football stat label for the need). "
+        "If a points league: identify my weakest starting spots (injuries, byes, "
+        "low output), then call yahoo_search_free_agents by position (sorted by AR "
+        "or a relevant stat, time_period=lastweek) to find the best available "
+        "upgrades.\n"
+        "3. Recommend 3-5 available players who would most improve my team, each "
+        "with a one-line rationale and their recent numbers.\n"
         "If I mention a specific league, call yahoo_list_my_leagues first and pass "
         "the matching league_id to every tool call."
     )
@@ -1980,8 +2014,9 @@ def weekly_recap() -> str:
         "Give me a weekly recap. Call yahoo_get_standings for the current standings, "
         "yahoo_get_matchup for my matchup status this week, and yahoo_get_transactions "
         "for recent league activity. Summarize my standing and record, how my matchup "
-        "is going (and the categories that will decide it), and any notable adds, "
-        "drops, or trades around the league."
+        "is going (the categories that will decide it, or the points margin — per the "
+        "matchup's `scoring` field), and any notable adds, drops, or trades around the "
+        "league."
     )
 
 
