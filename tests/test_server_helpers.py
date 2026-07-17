@@ -126,6 +126,24 @@ def test_resolve_sort_underscore_named_sort():
     assert server._resolve_sort("o_ar") == ("O_AR", False)
 
 
+# --- player formatting (sport-neutral pro_team output) --------------------
+
+def test_format_player_emits_pro_team_not_sport_specific_key():
+    # _format_player surfaces Yahoo's editorial_team_abbr under the neutral
+    # key pro_team (v2 rename), so the output reads correctly for any sport.
+    out = server._format_player({
+        "name": "Patrick Mahomes",
+        "editorial_team_abbr": "KC",
+        "player_id": "5",
+        "eligible_positions": ["QB"],
+    })
+    assert out["pro_team"] == "KC"
+    assert out["name"] == "Patrick Mahomes"
+    # the old/sport-specific keys must not leak into the output contract
+    assert "editorial_team_abbr" not in out
+    assert "mlb_team" not in out
+
+
 # --- error formatting ------------------------------------------------------
 
 def test_handle_error_classifies_auth():

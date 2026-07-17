@@ -295,7 +295,10 @@ def _format_player(player: dict) -> dict:
         info["selected_position"] = player.get("selected_position", "")
         info["status"] = player.get("status", "")
         info["status_full"] = player.get("status_full", "")
-        info["editorial_team_abbr"] = player.get("editorial_team_abbr", "")
+        # pro_team: the player's pro-sports team abbreviation (e.g. "NYY",
+        # "KC"), from Yahoo's sport-neutral editorial_team_abbr field. Emitted
+        # under a sport-neutral key so it reads correctly across MLB/NFL/etc.
+        info["pro_team"] = player.get("editorial_team_abbr", "")
         info["player_id"] = player.get("player_id", "")
         info["percent_owned"] = player.get("percent_owned", "")
     out = {k: v for k, v in info.items() if v != "" and v != []}
@@ -1213,7 +1216,7 @@ async def yahoo_get_player_ownership(params: GetPlayerOwnershipInput) -> str:
             "query": params.player_name,
             "player_name": info.get("name", params.player_name),
             "player_id": pid,
-            "mlb_team": info.get("editorial_team_abbr", ""),
+            "pro_team": info.get("pro_team", ""),
             "eligible_positions": info.get("eligible_positions", []),
             "ownership": ownership,
         }, indent=2, default=str)
@@ -1494,7 +1497,7 @@ async def yahoo_get_transactions(params: GetTransactionsInput) -> str:
                     if "name" in d:
                         player_info["name"] = _extract_name(d["name"])
                     if "editorial_team_abbr" in d:
-                        player_info["mlb_team"] = d["editorial_team_abbr"]
+                        player_info["pro_team"] = d["editorial_team_abbr"]
                     if "display_position" in d:
                         player_info["position"] = d["display_position"]
 
@@ -1905,11 +1908,13 @@ async def yahoo_get_player_notes(params: GetPlayerNotesInput) -> str:
                 if isinstance(section, list):
                     for m in section:
                         if isinstance(m, dict):
-                            for fld in ("name", "editorial_team_abbr", "status",
-                                         "status_full", "injury_note",
-                                         "on_disabled_list"):
+                            for fld in ("name", "status", "status_full",
+                                         "injury_note", "on_disabled_list"):
                                 if fld in m:
                                     player_info[fld] = m[fld]
+                            # Sport-neutral output key (see _format_player).
+                            if "editorial_team_abbr" in m:
+                                player_info["pro_team"] = m["editorial_team_abbr"]
                 elif isinstance(section, dict):
                     for fld in ("status", "status_full", "injury_note"):
                         if fld in section:
