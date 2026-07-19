@@ -19,7 +19,7 @@ build-backend = "hatchling.build"
 packages = ["."]
 
 [dependency-groups]
-dev = ["pytest>=9.1.1", "ruff>=0.15.20"]
+dev = ["pytest>=9.1.1", "ruff>=0.15.22"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
