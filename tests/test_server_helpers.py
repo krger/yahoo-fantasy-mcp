@@ -6,7 +6,10 @@ calls ``load_config()`` at import) works without real config. No network
 happens at import — the Yahoo session/league are built lazily in the handlers.
 """
 
+import asyncio
+
 import pytest
+from pydantic import ValidationError
 
 import server
 
@@ -179,3 +182,65 @@ def test_handle_error_classifies_not_found():
 def test_handle_error_generic_includes_type_and_message():
     msg = server._handle_error(ValueError("boom"))
     assert "ValueError" in msg and "boom" in msg
+
+
+# --- advertised input schemas (the public MCP contract) --------------------
+#
+# Tools whose fields are ALL optional take a shared default `params` instance
+# so `params` itself is absent from the schema's `required` list — a client
+# can call them with `{}` instead of the redundant `{"params": {}}`. Tools
+# with a genuinely required field (player lookups) must keep requiring it.
+
+# tools callable with no arguments at all
+_FULLY_OPTIONAL_TOOLS = {
+    "yahoo_get_roster",
+    "yahoo_get_standings",
+    "yahoo_get_scoreboard",
+    "yahoo_search_free_agents",
+    "yahoo_get_waivers",
+    "yahoo_get_taken_players",
+    "yahoo_get_league_settings",
+    "yahoo_get_matchup",
+    "yahoo_get_transactions",
+    "yahoo_list_teams",
+    "yahoo_list_my_leagues",  # takes no params argument at all
+}
+
+# tools that must still demand `params`, since it carries a required field
+_PARAMS_REQUIRED_TOOLS = {
+    "yahoo_get_player_stats",
+    "yahoo_get_player_ownership",
+    "yahoo_get_players_batch",
+    "yahoo_get_player_notes",
+}
+
+
+def _tool_schemas():
+    """Ask FastMCP for the schemas it actually advertises to clients."""
+    async def _collect():
+        return {t.name: t.inputSchema for t in await server.mcp.list_tools()}
+    return asyncio.run(_collect())
+
+
+def test_fully_optional_tools_do_not_require_params():
+    schemas = _tool_schemas()
+    for name in _FULLY_OPTIONAL_TOOLS:
+        assert name in schemas, f"{name} is no longer registered"
+        assert "params" not in schemas[name].get("required", []), (
+            f"{name} requires `params` but all its fields are optional"
+        )
+
+
+def test_player_lookup_tools_still_require_params():
+    schemas = _tool_schemas()
+    for name in _PARAMS_REQUIRED_TOOLS:
+        assert "params" in schemas[name].get("required", []), (
+            f"{name} must keep requiring `params` (it carries a required field)"
+        )
+
+
+def test_input_models_are_frozen():
+    # the shared default instances are safe only while nothing can mutate them
+    p = server.ListTeamsInput()
+    with pytest.raises(ValidationError):
+        p.league_id = "99999"

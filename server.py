@@ -691,7 +691,7 @@ mcp = FastMCP(
         "openWorldHint": True,
     },
 )
-async def yahoo_get_roster(params: GetRosterInput) -> str:
+async def yahoo_get_roster(params: GetRosterInput = GetRosterInput()) -> str:
     """Get the roster for a team in the fantasy league.
 
     Returns each player's name, position, eligible positions, pro team,
@@ -784,7 +784,7 @@ async def yahoo_get_roster(params: GetRosterInput) -> str:
         "openWorldHint": True,
     },
 )
-async def yahoo_get_standings(params: GetStandingsInput) -> str:
+async def yahoo_get_standings(params: GetStandingsInput = GetStandingsInput()) -> str:
     """Get current league standings including win-loss records and rankings.
 
     Returns all teams ranked by their current standing, each with a numeric
@@ -842,7 +842,7 @@ async def yahoo_get_standings(params: GetStandingsInput) -> str:
         "openWorldHint": True,
     },
 )
-async def yahoo_get_scoreboard(params: GetScoreboardInput) -> str:
+async def yahoo_get_scoreboard(params: GetScoreboardInput = GetScoreboardInput()) -> str:
     """Get the league scoreboard showing all matchups for a given week.
 
     Shows each head-to-head matchup with team names and scores/categories.
@@ -882,7 +882,9 @@ async def yahoo_get_scoreboard(params: GetScoreboardInput) -> str:
         "openWorldHint": True,
     },
 )
-async def yahoo_search_free_agents(params: SearchFreeAgentsInput) -> str:
+async def yahoo_search_free_agents(
+    params: SearchFreeAgentsInput = SearchFreeAgentsInput(),
+) -> str:
     """Search for available free agents in the league.
 
     Filter by position and sort by various stat categories to find
@@ -960,7 +962,7 @@ async def yahoo_search_free_agents(params: SearchFreeAgentsInput) -> str:
         "openWorldHint": True,
     },
 )
-async def yahoo_get_waivers(params: GetWaiversInput) -> str:
+async def yahoo_get_waivers(params: GetWaiversInput = GetWaiversInput()) -> str:
     """List the players currently on waivers.
 
     Waivers are players who have been dropped and are serving a waiver
@@ -1027,7 +1029,9 @@ async def yahoo_get_waivers(params: GetWaiversInput) -> str:
         "openWorldHint": True,
     },
 )
-async def yahoo_get_taken_players(params: GetTakenPlayersInput) -> str:
+async def yahoo_get_taken_players(
+    params: GetTakenPlayersInput = GetTakenPlayersInput(),
+) -> str:
     """List every rostered (taken) player across the league, with owner team.
 
     The inverse of free agents: all players currently owned by a team,
@@ -1262,7 +1266,9 @@ async def yahoo_get_player_ownership(params: GetPlayerOwnershipInput) -> str:
         "openWorldHint": True,
     },
 )
-async def yahoo_get_league_settings(params: GetLeagueSettingsInput) -> str:
+async def yahoo_get_league_settings(
+    params: GetLeagueSettingsInput = GetLeagueSettingsInput(),
+) -> str:
     """Get the league's configuration, rules, and scoring settings.
 
     Returns roster positions, stat categories, scoring type, number of teams,
@@ -1299,7 +1305,7 @@ async def yahoo_get_league_settings(params: GetLeagueSettingsInput) -> str:
         "openWorldHint": True,
     },
 )
-async def yahoo_get_matchup(params: GetMatchupInput) -> str:
+async def yahoo_get_matchup(params: GetMatchupInput = GetMatchupInput()) -> str:
     """Get detailed head-to-head matchup information for a specific team.
 
     Shows the matchup opponent, category-by-category breakdown,
@@ -1359,7 +1365,9 @@ async def yahoo_get_matchup(params: GetMatchupInput) -> str:
         "openWorldHint": True,
     },
 )
-async def yahoo_get_transactions(params: GetTransactionsInput) -> str:
+async def yahoo_get_transactions(
+    params: GetTransactionsInput = GetTransactionsInput(),
+) -> str:
     """Get recent transaction history for the league.
 
     Returns adds, drops, add/drops, and trades across the league so you
@@ -1607,7 +1615,7 @@ async def yahoo_get_transactions(params: GetTransactionsInput) -> str:
         "openWorldHint": True,
     },
 )
-async def yahoo_list_teams(params: ListTeamsInput) -> str:
+async def yahoo_list_teams(params: ListTeamsInput = ListTeamsInput()) -> str:
     """List all teams in the league with their names, keys, and managers.
 
     Useful for finding team numbers to use with other tools like

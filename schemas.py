@@ -54,8 +54,17 @@ class LeagueScopedInput(BaseModel):
     Carries the optional ``league_id`` override (falling back to the server's
     configured default) plus the shared model config, so every league-scoped
     tool advertises the field identically. Subclasses add their own fields.
+
+    ``frozen=True`` because handlers whose fields are all optional take a
+    shared default instance (``params: ListTeamsInput = ListTeamsInput()``,
+    evaluated once at import) so the ``params`` object itself is not required
+    in the advertised schema. Freezing makes that sharing structurally safe:
+    a handler cannot mutate the default and leak state into later requests.
+    Handlers only read ``params``, so nothing depends on mutability.
     """
-    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    model_config = ConfigDict(
+        str_strip_whitespace=True, extra="forbid", frozen=True
+    )
 
     league_id: Optional[str] = Field(
         default=None, description=_LEAGUE_ID_DESC, pattern=_LEAGUE_ID_PATTERN
