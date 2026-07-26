@@ -8,8 +8,8 @@ dependency on the Yahoo client or parsers — so they live apart from
 ``server.py``, which imports the ones it annotates handlers with.
 """
 
-from enum import Enum
-from typing import List, Literal, Optional
+from enum import StrEnum
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -250,7 +250,7 @@ class GetMatchupInput(LeagueScopedInput):
     )
 
 
-class TransactionType(str, Enum):
+class TransactionType(StrEnum):
     """Types of transactions to filter by."""
     ADD = "add"
     DROP = "drop"
@@ -261,7 +261,7 @@ class TransactionType(str, Enum):
 class GetTransactionsInput(LeagueScopedInput):
     """Input for retrieving league transaction history."""
 
-    transaction_types: Optional[List[TransactionType]] = Field(
+    transaction_types: Optional[list[TransactionType]] = Field(
         default=None,
         description=(
             "Filter by transaction type(s). Options: add, drop, add/drop, trade. "
@@ -288,7 +288,7 @@ class GetTransactionsInput(LeagueScopedInput):
 class GetPlayersBatchInput(LeagueScopedInput):
     """Input for batch player lookup."""
 
-    player_names: List[str] = Field(
+    player_names: list[str] = Field(
         ...,
         description="List of player names to resolve and fetch in one batched Yahoo API call.",
         min_length=1,

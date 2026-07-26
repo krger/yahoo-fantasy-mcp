@@ -244,3 +244,92 @@ def test_input_models_are_frozen():
     p = server.ListTeamsInput()
     with pytest.raises(ValidationError):
         p.league_id = "99999"
+
+
+# --- transaction player/data extraction -----------------------------------
+#
+# These were closures defined inside the transactions handler's nested loops,
+# mutating dicts they captured from the enclosing scope (which ruff flags as
+# B023). They are now module-level functions taking the target dict
+# explicitly, so the tests below pin both the parsing and the property that
+# made the closure form risky: no state carries between calls.
+
+
+def test_txn_extract_name_handles_dict_and_string():
+    assert server._txn_extract_name({"full": "Shohei Ohtani"}) == "Shohei Ohtani"
+    assert server._txn_extract_name("Mookie Betts") == "Mookie Betts"
+    # a dict without "full" degrades to a string rather than raising
+    assert server._txn_extract_name({"first": "Mookie"}) == "{'first': 'Mookie'}"
+
+
+def test_txn_player_fields_maps_pro_team_and_position():
+    info = {}
+    server._txn_player_fields(
+        {
+            "name": {"full": "Corbin Burnes"},
+            "editorial_team_abbr": "BAL",
+            "display_position": "SP",
+        },
+        info,
+    )
+    assert info == {"name": "Corbin Burnes", "pro_team": "BAL", "position": "SP"}
+
+
+def test_txn_player_fields_ignores_absent_keys():
+    info = {}
+    server._txn_player_fields({"editorial_team_abbr": "LAD"}, info)
+    assert info == {"pro_team": "LAD"}
+
+
+def test_txn_data_fields_reads_dict_form():
+    txn = {}
+    server._txn_data_fields(
+        {
+            "transaction_data": {
+                "type": "add",
+                "destination_team_name": "Lincolnshire Poachers",
+                "destination_team_key": "422.l.60467.t.5",
+            }
+        },
+        txn,
+    )
+    assert txn["action"] == "add"
+    assert txn["destination_team"] == "Lincolnshire Poachers"
+    assert txn["destination_team_key"] == "422.l.60467.t.5"
+    # no source on a waiver add
+    assert "source_team" not in txn
+
+
+def test_txn_data_fields_merges_list_wrapped_form():
+    # Yahoo sometimes wraps transaction_data in a list of partial dicts
+    txn = {}
+    server._txn_data_fields(
+        {
+            "transaction_data": [
+                {"type": "add/drop", "source_team_name": "Bangers"},
+                {"source_team_key": "422.l.60467.t.2"},
+            ]
+        },
+        txn,
+    )
+    assert txn["action"] == "add/drop"
+    assert txn["source_team"] == "Bangers"
+    assert txn["source_team_key"] == "422.l.60467.t.2"
+
+
+def test_txn_data_fields_ignores_unusable_shape():
+    txn = {}
+    server._txn_data_fields({"transaction_data": "nonsense"}, txn)
+    assert txn == {}
+
+
+def test_txn_helpers_do_not_leak_state_between_calls():
+    # the regression the closure form invited: one player's fields bleeding
+    # into the next player's dict
+    first, second = {}, {}
+    server._txn_player_fields(
+        {"name": {"full": "A"}, "editorial_team_abbr": "NYY"}, first
+    )
+    server._txn_player_fields({"name": {"full": "B"}}, second)
+    assert first == {"name": "A", "pro_team": "NYY"}
+    assert second == {"name": "B"}

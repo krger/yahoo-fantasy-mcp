@@ -31,7 +31,7 @@ Keep each module's concern intact: parsers stay pure (no network/OAuth/MCP),
 schemas stay declarative, config stays env-only, and the Yahoo client + tool
 wiring stay in `server.py`.
 
-- `server.py` — main server and entrypoint: MCP tool definitions, the Yahoo client, OAuth/token handling, free-agent request-building (`_resolve_sort`, `_fetch_free_agents_raw`), `_format_player`, and the `_handle_error` formatter.
+- `server.py` — main server and entrypoint: MCP tool definitions, the Yahoo client, OAuth/token handling, free-agent request-building (`_resolve_sort`, `_fetch_free_agents_raw`), `_format_player`, the transaction extraction helpers (`_txn_extract_name`, `_txn_player_fields`, `_txn_data_fields` — module-level on purpose: they were closures nested two loops deep in the transactions handler, mutating captured dicts), and the `_handle_error` formatter.
 - `config.py` — runtime configuration loaded from environment variables (`load_config()` → a frozen `Config` dataclass). `server.py` calls it once at import (`cfg = load_config()`) so misconfiguration fails loudly at startup. `YAHOO_LEAGUE_ID` is **required** (no default — a fork must set its own) and serves as the **default** league; tools also accept a per-call `league_id` override (see below). `YAHOO_SPORT` is a comma-separated list of game codes → `cfg.sports` (a tuple; default `("mlb",)`), with a `default_sport` property (the first entry, used to construct a league key when discovery is unavailable and for the `yfa.Game` game-id lookup). Set it to e.g. `mlb,nfl` to serve both sports from one deployment. `YAHOO_SEASON` is optional (auto-detects the current season when unset); `YAHOO_OAUTH_FILE` overrides the creds path. `MCP_ALLOWED_HOSTS` is optional (comma-separated): extra `Host` header values the streamable-HTTP transport's DNS-rebinding protection should accept, for serving behind a reverse proxy/tunnel that forwards a non-loopback `Host`. Loopback hosts are always allowed; unset keeps stock loopback-only behavior. The value is deployment-specific, so it stays in the environment, not the repo (the public hostname never enters version control). **Gotcha:** the built-in loopback allowlist only matches `host:port` forms (`localhost:*`, `127.0.0.1:*`), so a proxy/tunnel that forwards a *bare* host with no port — commonly `Host: localhost` — is **not** covered and must be listed explicitly (add `localhost` to `MCP_ALLOWED_HOSTS`). The symptom of a missing entry is `421` with `Invalid Host header: <value>` in the logs; add exactly that value.
 - `yahoo_parsers.py` — the pure Yahoo response parsers/normalizers (no network, no OAuth, no MCP): `_to_int`/`_to_number`, `_flatten_raw_yahoo_player`, `_extract_team_summary`, `_parse_matchup_node`, `_points_matchup_node`, `_parse_matchup`, `_parse_scoreboard`, `_parse_team_season_stats`, `_rank_season_categories`, `_parse_standings`, `_resolve_team_key`, and `_parse_my_leagues` (flattens the `users/games/leagues` response into the account's `{league_id, league_key, name, season, game_code}` list). Scoring is **not** hard-coded: `build_scoring_config()` derives a `ScoringConfig` (labels, scored stat_ids in display order, lower-is-better set, **and an `is_points_league` flag**) from the league's own `settings` response, and the labeling/ranking parsers take that config as an argument — so the server adapts to any league's categories **and to its scoring model**. `is_points_league` is detected from a `stat_modifiers` block (points leagues price each stat; a categories league has none) or `scoring_type == "point"`; when true, `_parse_matchup_node` delegates to `_points_matchup_node` (winner from the matchup-level `winner_team_key`/`is_tied`, each team's fantasy total as `points`, stat lines as informational `stat_lines`) instead of the per-category win/loss framing, and standings skip category ranking (`_parse_standings` surfaces `points_for`/`points_against` instead). This is the unit-test target (the repo's main source of bugs); `server.py` imports from it.
 - `schemas.py` — the Pydantic input models (`GetRosterInput`, `SearchFreeAgentsInput`, `GetMatchupInput`, the `TransactionType` enum, etc.): the MCP tools' input contract. They share a `LeagueScopedInput` base carrying the optional `league_id` override, so every league-scoped tool advertises it identically (the otherwise-argument-less tools — standings, settings, list-teams — get `GetStandingsInput`/`GetLeagueSettingsInput`/`ListTeamsInput`, which add nothing but that field). FastMCP turns these into the JSON schema advertised to clients, so class/field names are part of the public contract — renaming is a breaking change. `server.py` imports the models it annotates handlers with. The base sets `frozen=True`: handlers whose fields are **all** optional take a shared default instance (`params: ListTeamsInput = ListTeamsInput()`, evaluated once at import) so `params` itself is absent from the schema's `required` list and clients can call those tools with `{}` rather than the redundant `{"params": {}}` (added in v2.1.0). Freezing makes the shared default structurally safe — a handler can't mutate it and leak state into later requests. **Keep the two in sync:** a model that gains a *required* field must lose its default in the handler signature, or the tool advertises callable-with-no-args and then fails at validation. The four player-lookup tools (`player_stats`, `player_ownership`, `players_batch`, `player_notes`) carry required fields and therefore still require `params`; `tests/test_server_helpers.py` asserts that split against the real advertised schemas.
@@ -63,15 +63,19 @@ uv run ruff check .     # lint: unused imports, undefined names, import order
 uv run ruff check --fix .   # auto-fix the fixable ones
 ```
 
-Ruff config lives in `pyproject.toml` (`[tool.ruff]`): an **explicit**
-`select = ["E4", "E7", "E9", "F", "I"]` (pyflakes plus import sorting),
-targeting py3.13. It is pinned rather than inheriting ruff's defaults on
-purpose — ruff 0.16.0 widened those from 59 rules to 413, which flags patterns
-this repo chose deliberately (the frozen shared `params` defaults trip `B008`,
-the `_handle_error` broad excepts trip `BLE001`). Adopting a wider set is a
-separate, deliberate change, not something a version bump should do silently.
-Keep it green — CI runs `ruff check`, then pytest, then a `pip-audit`
-dependency scan.
+Ruff config lives in `pyproject.toml` (`[tool.ruff]`), targeting py3.13, with
+an **explicit** `select` — pinned rather than inheriting ruff's defaults on
+purpose, since 0.16.0 widened those from 59 rules to 413 and a lint policy
+change should be deliberate, not something a version bump delivers. The set is
+`E4/E7/E9` + `F` + `I` (import sorting), plus `B` (bugbear), `DTZ` (unintended
+naive datetimes), and `SIM`/`UP` (modernization). Two rules are globally
+ignored, both because they fight deliberate choices here: `B008` flags the
+frozen shared `params` default instances, and `UP045` (`Optional[X]` →
+`X | None`) is pure churn across the Pydantic schema contract. Two sites carry
+a `# noqa` with a reason instead — both `DTZ`, both naive-on-purpose (the
+season year tracks the US sports calendar via the local date; a roster `day`
+is a bare calendar date). Keep it green — CI runs `ruff check`, then pytest,
+then a `pip-audit` dependency scan.
 
 The audit step exports the locked **production** tree (`uv export --no-dev
 --no-emit-project`) and runs `pip-audit` on it, so a published advisory against
@@ -106,8 +110,11 @@ dict-vs-list league node) — all imported from `yahoo_parsers` (the test import
 that module directly, not `server`). `tests/test_server_helpers.py` covers the
 `server.py` helpers: `_resolve_sort` (incl. the sport-neutral league-label
 fallback), `_get_league` resolution (discovery-preferred + degraded fallback,
-mocked), and `_format_player`'s `pro_team` output. **Add a case here when you
-touch a parser** — especially new stat_ids, response shapes, or scoring models.
+mocked), `_format_player`'s `pro_team` output, and the transaction extraction
+helpers (`_txn_extract_name`, `_txn_player_fields`, `_txn_data_fields` — both
+Yahoo shapes, plus the no-state-leaks-between-calls property that the former
+closure form put at risk). **Add a case here when you touch a parser** —
+especially new stat_ids, response shapes, or scoring models.
 
 Automated tests don't hit Yahoo, so there's still no substitute for exercising
 the actual tools against the live league for anything API-facing. After a
