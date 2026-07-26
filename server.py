@@ -170,6 +170,28 @@ def _get_my_leagues(sc: OAuth2) -> list[dict]:
     return _my_leagues
 
 
+def _season_for(sc: OAuth2, league_key: str) -> Optional[int]:
+    """Return the season ``league_key`` belongs to, per Yahoo's own discovery.
+
+    A season is a property of the league, not of the calendar: an NFL season
+    starting in September runs into January but stays season N, so the current
+    year is wrong for a football league for several weeks. Discovery already
+    carries each league's own season (and spans sports), so it is the right
+    source — and it stays correct for an MLB and an NFL league at the same
+    time, which a single configured value cannot.
+
+    Returns ``None`` when discovery is unavailable or the key isn't among the
+    account's leagues, leaving the fallback to the caller.
+    """
+    for lg in _get_my_leagues(sc):
+        if lg.get("league_key") == league_key:
+            try:
+                return int(lg.get("season") or "")
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
 def _get_league(sc: OAuth2, league_id: Optional[str] = None) -> yfa.League:
     """Get the Yahoo Fantasy league object for ``league_id`` (or the default).
 
@@ -424,10 +446,16 @@ def _fetch_free_agents_raw(
     # Yahoo's per-page cap is 25. Paginate if the caller asked for more.
     PAGE = 25
     requested = max(1, int(count))
-    # Local calendar year on purpose: Yahoo's seasons are keyed to the US
-    # sports calendar, so the deploy host's local date tracks them better than
-    # UTC would (which rolls over while it is still New Year's Eve in the US).
-    season = date.today().year  # noqa: DTZ011
+    # Prefer the league's own season — a football season runs into January,
+    # so the calendar year is wrong for an NFL league for several weeks.
+    # Fall back to a pinned YAHOO_SEASON, then the local calendar year (local
+    # on purpose: Yahoo's seasons follow the US sports calendar, so UTC would
+    # roll over while it is still New Year's Eve in the US).
+    season = (
+        _season_for(sc, league_key)
+        or cfg.season
+        or date.today().year  # noqa: DTZ011
+    )
     filters: list[str] = []
 
     if status:

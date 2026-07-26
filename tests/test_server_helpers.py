@@ -41,9 +41,17 @@ class _FakeGame:
         return "999"
 
 
+# Shaped like _parse_my_leagues output, including the string ``season`` it
+# always emits — _season_for reads it, and the two sports differ deliberately.
 _MINE = [
-    {"league_id": "12345", "league_key": "458.l.12345", "name": "MLB", "game_code": "mlb"},
-    {"league_id": "70000", "league_key": "470.l.70000", "name": "NFL", "game_code": "nfl"},
+    {
+        "league_id": "12345", "league_key": "458.l.12345",
+        "name": "MLB", "season": "2026", "game_code": "mlb",
+    },
+    {
+        "league_id": "70000", "league_key": "470.l.70000",
+        "name": "NFL", "season": "2026", "game_code": "nfl",
+    },
 ]
 
 
@@ -333,3 +341,57 @@ def test_txn_helpers_do_not_leak_state_between_calls():
     server._txn_player_fields({"name": {"full": "B"}}, second)
     assert first == {"name": "A", "pro_team": "NYY"}
     assert second == {"name": "B"}
+
+
+# --- per-league season resolution -----------------------------------------
+#
+# The season a stat sort should target belongs to the league, not the wall
+# clock: an NFL season runs into January, so the calendar year is wrong for a
+# football league for weeks. Discovery already carries each league's own
+# season, and it stays right for an MLB and an NFL league simultaneously --
+# which a single configured YAHOO_SEASON cannot.
+
+
+def test_season_for_reads_the_leagues_own_season(monkeypatch):
+    monkeypatch.setattr(server, "_get_my_leagues", lambda sc: _MINE)
+    assert server._season_for(None, "470.l.70000") == 2026
+    assert server._season_for(None, "458.l.12345") == 2026
+
+
+def test_season_for_is_per_league_not_global(monkeypatch):
+    # the case a single env var cannot serve: two sports, two seasons at once
+    mixed = [
+        {**_MINE[0], "season": "2027"},   # MLB has rolled over
+        {**_MINE[1], "season": "2026"},   # NFL is still mid-season in January
+    ]
+    monkeypatch.setattr(server, "_get_my_leagues", lambda sc: mixed)
+    assert server._season_for(None, "458.l.12345") == 2027
+    assert server._season_for(None, "470.l.70000") == 2026
+
+
+def test_season_for_returns_none_for_unknown_key(monkeypatch):
+    monkeypatch.setattr(server, "_get_my_leagues", lambda sc: _MINE)
+    assert server._season_for(None, "999.l.00000") is None
+
+
+def test_season_for_returns_none_when_discovery_unavailable(monkeypatch):
+    # [] means discovery failed -- caller falls back rather than guessing
+    monkeypatch.setattr(server, "_get_my_leagues", lambda sc: [])
+    assert server._season_for(None, "470.l.70000") is None
+
+
+def test_season_for_tolerates_missing_or_unparsable_season(monkeypatch):
+    # _parse_my_leagues emits "" when Yahoo omits the field
+    monkeypatch.setattr(
+        server,
+        "_get_my_leagues",
+        lambda sc: [{"league_key": "470.l.70000", "season": ""}],
+    )
+    assert server._season_for(None, "470.l.70000") is None
+
+    monkeypatch.setattr(
+        server,
+        "_get_my_leagues",
+        lambda sc: [{"league_key": "470.l.70000", "season": "not-a-year"}],
+    )
+    assert server._season_for(None, "470.l.70000") is None
