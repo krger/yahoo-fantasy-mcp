@@ -63,9 +63,15 @@ uv run ruff check .     # lint: unused imports, undefined names, import order
 uv run ruff check --fix .   # auto-fix the fixable ones
 ```
 
-Ruff config lives in `pyproject.toml` (`[tool.ruff]`): defaults (pyflakes `F`
-+ `E4/E7/E9`) plus `I` for import sorting, targeting py3.13. Keep it green —
-CI runs `ruff check`, then pytest, then a `pip-audit` dependency scan.
+Ruff config lives in `pyproject.toml` (`[tool.ruff]`): an **explicit**
+`select = ["E4", "E7", "E9", "F", "I"]` (pyflakes plus import sorting),
+targeting py3.13. It is pinned rather than inheriting ruff's defaults on
+purpose — ruff 0.16.0 widened those from 59 rules to 413, which flags patterns
+this repo chose deliberately (the frozen shared `params` defaults trip `B008`,
+the `_handle_error` broad excepts trip `BLE001`). Adopting a wider set is a
+separate, deliberate change, not something a version bump should do silently.
+Keep it green — CI runs `ruff check`, then pytest, then a `pip-audit`
+dependency scan.
 
 The audit step exports the locked **production** tree (`uv export --no-dev
 --no-emit-project`) and runs `pip-audit` on it, so a published advisory against
