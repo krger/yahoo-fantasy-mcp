@@ -170,6 +170,28 @@ def _get_my_leagues(sc: OAuth2) -> list[dict]:
     return _my_leagues
 
 
+def _season_for(sc: OAuth2, league_key: str) -> Optional[int]:
+    """Return the season ``league_key`` belongs to, per Yahoo's own discovery.
+
+    A season is a property of the league, not of the calendar: an NFL season
+    starting in September runs into January but stays season N, so the current
+    year is wrong for a football league for several weeks. Discovery already
+    carries each league's own season (and spans sports), so it is the right
+    source — and it stays correct for an MLB and an NFL league at the same
+    time, which a single configured value cannot.
+
+    Returns ``None`` when discovery is unavailable or the key isn't among the
+    account's leagues, leaving the fallback to the caller.
+    """
+    for lg in _get_my_leagues(sc):
+        if lg.get("league_key") == league_key:
+            try:
+                return int(lg.get("season") or "")
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
 def _get_league(sc: OAuth2, league_id: Optional[str] = None) -> yfa.League:
     """Get the Yahoo Fantasy league object for ``league_id`` (or the default).
 
@@ -196,15 +218,21 @@ def _get_league(sc: OAuth2, league_id: Optional[str] = None) -> yfa.League:
     mine = _get_my_leagues(sc)
 
     # Validate an explicit, non-default override against the account's leagues.
-    if league_id is not None and target != cfg.league_id:
-        if mine and target not in {lg["league_id"] for lg in mine}:
-            available = ", ".join(
-                f'{lg["league_id"]} ({lg["name"]})' for lg in mine
-            )
-            raise ValueError(
-                f"League id {target!r} is not one of your leagues. "
-                f"Available: {available}. Use yahoo_list_my_leagues to see them."
-            )
+    # An empty ``mine`` means discovery is unavailable — degrade permissive
+    # rather than block, so the override still resolves.
+    if (
+        league_id is not None
+        and target != cfg.league_id
+        and mine
+        and target not in {lg["league_id"] for lg in mine}
+    ):
+        available = ", ".join(
+            f'{lg["league_id"]} ({lg["name"]})' for lg in mine
+        )
+        raise ValueError(
+            f"League id {target!r} is not one of your leagues. "
+            f"Available: {available}. Use yahoo_list_my_leagues to see them."
+        )
 
     # Prefer the discovered league_key — it already carries the correct game
     # code and season, so the same path resolves an MLB or an NFL league.
@@ -418,7 +446,16 @@ def _fetch_free_agents_raw(
     # Yahoo's per-page cap is 25. Paginate if the caller asked for more.
     PAGE = 25
     requested = max(1, int(count))
-    season = date.today().year
+    # Prefer the league's own season — a football season runs into January,
+    # so the calendar year is wrong for an NFL league for several weeks.
+    # Fall back to a pinned YAHOO_SEASON, then the local calendar year (local
+    # on purpose: Yahoo's seasons follow the US sports calendar, so UTC would
+    # roll over while it is still New Year's Eve in the US).
+    season = (
+        _season_for(sc, league_key)
+        or cfg.season
+        or date.today().year  # noqa: DTZ011
+    )
     filters: list[str] = []
 
     if status:
@@ -728,7 +765,10 @@ async def yahoo_get_roster(params: GetRosterInput = GetRosterInput()) -> str:
         day_obj = None
         if params.day:
             try:
-                day_obj = datetime.strptime(params.day, "%Y-%m-%d").date()
+                # Naive by design: a roster day is a calendar date with no
+                # time or zone. strptime (not date.fromisoformat) keeps the
+                # format strictly YYYY-MM-DD, matching the error message.
+                day_obj = datetime.strptime(params.day, "%Y-%m-%d").date()  # noqa: DTZ007
             except ValueError:
                 return f"Error: Invalid day '{params.day}'. Expected YYYY-MM-DD."
 
@@ -1355,6 +1395,49 @@ async def yahoo_get_matchup(params: GetMatchupInput = GetMatchupInput()) -> str:
         return _handle_error(e)
 
 
+def _txn_extract_name(val) -> str:
+    """Yahoo returns a transaction player's name as a dict or a plain string."""
+    if isinstance(val, dict):
+        return val.get("full", str(val))
+    return str(val)
+
+
+def _txn_player_fields(d: dict, player_info: dict) -> None:
+    """Pull player fields out of ``d`` into ``player_info``, guarding types."""
+    if "name" in d:
+        player_info["name"] = _txn_extract_name(d["name"])
+    if "editorial_team_abbr" in d:
+        player_info["pro_team"] = d["editorial_team_abbr"]
+    if "display_position" in d:
+        player_info["position"] = d["display_position"]
+
+
+def _txn_data_fields(d: dict, transaction_data: dict) -> None:
+    """Pull ``transaction_data`` out of ``d`` into ``transaction_data``."""
+    td = d["transaction_data"]
+    if not isinstance(td, dict):
+        # Sometimes wrapped in a list of dicts
+        if isinstance(td, list):
+            merged = {}
+            for item_td in td:
+                if isinstance(item_td, dict):
+                    merged.update(item_td)
+            td = merged
+        else:
+            return
+    transaction_data["action"] = td.get("type", "")
+    dest = td.get("destination_team_name", "")
+    src = td.get("source_team_name", "")
+    dest_key = td.get("destination_team_key", "")
+    src_key = td.get("source_team_key", "")
+    if dest:
+        transaction_data["destination_team"] = dest
+        transaction_data["destination_team_key"] = dest_key
+    if src:
+        transaction_data["source_team"] = src
+        transaction_data["source_team_key"] = src_key
+
+
 @mcp.tool(
     name="yahoo_get_transactions",
     annotations={
@@ -1521,55 +1604,15 @@ async def yahoo_get_transactions(
                 player_info = {}
                 transaction_data = {}
 
-                def _extract_name(val):
-                    """Yahoo returns name as a dict or a plain string."""
-                    if isinstance(val, dict):
-                        return val.get("full", str(val))
-                    return str(val)
-
-                def _extract_player_fields(d):
-                    """Pull player fields from a dict, guarding types."""
-                    if "name" in d:
-                        player_info["name"] = _extract_name(d["name"])
-                    if "editorial_team_abbr" in d:
-                        player_info["pro_team"] = d["editorial_team_abbr"]
-                    if "display_position" in d:
-                        player_info["position"] = d["display_position"]
-
-                def _extract_txn_data(d):
-                    """Pull transaction_data from a dict, guarding types."""
-                    td = d["transaction_data"]
-                    if not isinstance(td, dict):
-                        # Sometimes wrapped in a list of dicts
-                        if isinstance(td, list):
-                            merged = {}
-                            for item_td in td:
-                                if isinstance(item_td, dict):
-                                    merged.update(item_td)
-                            td = merged
-                        else:
-                            return
-                    transaction_data["action"] = td.get("type", "")
-                    dest = td.get("destination_team_name", "")
-                    src = td.get("source_team_name", "")
-                    dest_key = td.get("destination_team_key", "")
-                    src_key = td.get("source_team_key", "")
-                    if dest:
-                        transaction_data["destination_team"] = dest
-                        transaction_data["destination_team_key"] = dest_key
-                    if src:
-                        transaction_data["source_team"] = src
-                        transaction_data["source_team_key"] = src_key
-
                 for item in player_entry:
                     if isinstance(item, list):
                         for sub in item:
                             if isinstance(sub, dict):
-                                _extract_player_fields(sub)
+                                _txn_player_fields(sub, player_info)
                     elif isinstance(item, dict):
-                        _extract_player_fields(item)
+                        _txn_player_fields(item, player_info)
                         if "transaction_data" in item:
-                            _extract_txn_data(item)
+                            _txn_data_fields(item, transaction_data)
 
                 players.append({**player_info, **transaction_data})
 
