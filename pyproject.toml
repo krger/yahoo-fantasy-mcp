@@ -1,12 +1,12 @@
 [project]
 name = "yahoo-fantasy-mcp"
-version = "2.1.1"
+version = "2.2.0"
 description = "MCP server for Yahoo Fantasy Sports (baseball, football)"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.13"
 dependencies = [
-    "mcp[cli]>=1.28.1",
+    "mcp[cli]>=2.0.0",
     "yahoo_fantasy_api>=2.12.2",
     "yahoo_oauth>=2.1.1",
 ]
