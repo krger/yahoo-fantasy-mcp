@@ -224,9 +224,11 @@ _PARAMS_REQUIRED_TOOLS = {
 
 
 def _tool_schemas():
-    """Ask FastMCP for the schemas it actually advertises to clients."""
+    """Ask the MCP server for the schemas it actually advertises to clients."""
     async def _collect():
-        return {t.name: t.inputSchema for t in await server.mcp.list_tools()}
+        # mcp 2.0 snake_cased the model attribute (`inputSchema` -> `input_schema`);
+        # the serialized wire field is still spec camelCase `inputSchema`.
+        return {t.name: t.input_schema for t in await server.mcp.list_tools()}
     return asyncio.run(_collect())
 
 

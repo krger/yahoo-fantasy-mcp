@@ -1,7 +1,7 @@
 """Pydantic input models for the MCP tools — the server's input contract.
 
 These declare and validate the arguments each ``@mcp.tool`` handler accepts;
-FastMCP turns them into the JSON schema advertised to MCP clients, so the
+the MCP server turns them into the JSON schema advertised to clients, so the
 class and field names are part of the public contract (don't rename without
 treating it as a breaking change). Pure declarations — no validators and no
 dependency on the Yahoo client or parsers — so they live apart from
