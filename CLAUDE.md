@@ -115,9 +115,18 @@ helpers (`_txn_extract_name`, `_txn_player_fields`, `_txn_data_fields` — both
 Yahoo shapes, plus the no-state-leaks-between-calls property that the former
 closure form put at risk), and `_season_for` (per-league season, including the
 two-sports-two-seasons case a single `YAHOO_SEASON` cannot express, and the
-`None` returns that hand off to the fallback chain). **Add a case here when
-you touch a parser** — especially new stat_ids, response shapes, or scoring
-models.
+`None` returns that hand off to the fallback chain). It also drives the real
+ASGI app through starlette's `TestClient` (in-process, no sockets) to pin
+**Host validation**: `build_app()` honors a configured allowlist (bare
+`localhost` → `200`, unlisted host → `421`) and, with none configured, keeps
+the library's stock loopback-only default — which still rejects *bare*
+`localhost`, the gotcha `MCP_ALLOWED_HOSTS` exists to work around. Those two
+are the only tests that build the app, so they carry an `offline_lifespan`
+fixture: entering `TestClient` runs the lifespan, which would otherwise build
+a real Yahoo session from `oauth2.json` and call the live API. **Any new test
+that builds the app needs that fixture** — without it the suite silently stops
+being offline. **Add a case here when you touch a parser** — especially new
+stat_ids, response shapes, or scoring models.
 
 Automated tests don't hit Yahoo, so there's still no substitute for exercising
 the actual tools against the live league for anything API-facing. After a
@@ -221,7 +230,7 @@ Be defensive:
 ## Known issues / fragile areas
 
 - **Yahoo requires every app to be approved for Fantasy Sports API access — an unapproved app gets `403 "This application is not authorized to perform this action"` on *every* endpoint.** This is a permanent platform change (~2026-07-24), not a past outage: self-serve app creation no longer grants Fantasy Sports permission (`developer.yahoo.com/fantasysports/guide/` 308-redirects to <https://sports.yahoo.com/developer/>), access is granted per-app by request at <https://sports.yahoo.com/developer/access/>, and apps created under the old flow lost access at the cutover. **This deployment's app has access** — it 403'd for ~a day around the cutover and was serving normally again by 2026-07-25 (all 14 tools verified live through the connector; nothing was changed locally), so there is no pending action here. But the gate still applies to anyone else: **a fork, a new app, or a re-created app starts unapproved and 403s until Yahoo approves it** — see README §"Get Yahoo API access, credentials, and authenticate". Diagnostic for any blanket `403`: if the `refresh_token` grant against `api.login.yahoo.com/oauth2/get_token` returns **200** but `/fantasy/v2/game/{code}` returns **403**, it is approval/authorization at Yahoo, never local creds — no code, credential, or deploy change fixes it, and regaining access needs no redeploy or restart. **Do not delete or re-create the Yahoo app** (the create form no longer offers the Fantasy Sports permission, so a replacement is strictly worse, and deleting destroys the **App ID** an access request needs). Don't repeat the 2026-07-24 dead ends: re-saving the app with "Fantasy Sports - Read" checked, minting a fresh access token, and a full fresh authorization-code grant all still 403'd.
-- **`transport_security` is passed at the entry point, not the constructor** (since the mcp 2.0 migration in v2.2.0 — `MCPServer.__init__` no longer accepts it). It goes to `mcp.streamable_http_app(transport_security=_transport_security)`; drop it there and the transport silently falls back to the loopback-only default, which `421`s every request the tunnel forwards (`Host: localhost`). A **hard outage that no test catches**, since the tests never build the ASGI app — verify by hand after touching the entry point: start the server with `MCP_ALLOWED_HOSTS=localhost` and confirm `curl -H 'Host: localhost' …` returns `200` (see "Running locally").
+- **`transport_security` is wired in `build_app()`, not on the `MCPServer` constructor** (since the mcp 2.0 migration in v2.2.0 — `MCPServer.__init__` no longer accepts it). Drop it from `mcp.streamable_http_app(transport_security=_transport_security)` and the transport silently falls back to the loopback-only default, which `421`s every request the tunnel forwards (`Host: localhost`) — a hard outage that presents as "claude.ai can't connect". `build_app()` exists as a seam purely so this is reachable from tests; **keep it callable and keep it reading `_transport_security` at call time**, or the guard tests below stop guarding anything.
 - Historically regression-prone handlers (verify these still work after changes): transactions handler, free-agent search **sort** parameter, player-notes endpoint, and **roster team-number resolution**.
 - **`yahoo_search_free_agents` with `sort=PTS` returns zero results** in a head-to-head **categories** league — Yahoo computes no fantasy-points ranking there. Expected behavior, not a bug; the tool description documents it and steers callers to AR or a stat/category sort. Don't "fix" it. (In a **points** league — typical football — `PTS` *is* the natural sort and returns results; the caveat is categories-specific.)
 - **Points-league (football) parsing is on-spec, not yet live-verified.** The points-league matchup/settings fixtures (`*_POINTS`) were assembled from the documented Yahoo shape + real NFL stat_ids ahead of a drafted NFL league — the exact node layout (`winner_team_key`/`is_tied`, `team_projected_points`) hasn't been confirmed against a real NFL matchup response. **Re-verify against a live NFL league once one drafts** (call the tools, compare to the Yahoo web UI) and correct the fixtures/parsers if the shape differs.
