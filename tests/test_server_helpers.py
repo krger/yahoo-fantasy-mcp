@@ -397,3 +397,87 @@ def test_season_for_tolerates_missing_or_unparsable_season(monkeypatch):
         lambda sc: [{"league_key": "470.l.70000", "season": "not-a-year"}],
     )
     assert server._season_for(None, "470.l.70000") is None
+
+
+# --- Host validation on the built ASGI app --------------------------------
+#
+# The transport_security wiring in build_app() is a production-only failure
+# mode: lose it and the transport falls back to a loopback-only allowlist,
+# which 421s every request the tunnel forwards as bare `Host: localhost` --
+# a hard outage that looks like "claude.ai can't connect". Nothing else in
+# the suite builds the ASGI app, so these drive it through starlette's
+# TestClient (in-process, no sockets, no network) and assert the actual
+# status codes rather than that some argument was passed.
+
+_INIT_REQUEST = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+        "protocolVersion": "2025-06-18",
+        "capabilities": {},
+        "clientInfo": {"name": "test", "version": "0"},
+    },
+}
+
+
+@pytest.fixture
+def offline_lifespan(monkeypatch):
+    """Keep app startup off the network.
+
+    Entering TestClient runs the app's lifespan, which would otherwise build a
+    real Yahoo session from the repo-root ``oauth2.json`` and call the live
+    API. ``app_lifespan`` already degrades gracefully on failure, so raising
+    here keeps these tests offline without special-casing anything.
+    """
+
+    def _no_session():
+        raise RuntimeError("offline test: no Yahoo session")
+
+    monkeypatch.setattr(server, "_get_oauth_session", _no_session)
+
+
+def _status_for_host(host):
+    """POST an initialize request with an explicit Host header.
+
+    Builds a fresh app per call: the streamable-HTTP session manager refuses
+    to run twice, so one app cannot serve two requests here.
+    """
+    from starlette.testclient import TestClient
+
+    with TestClient(server.build_app()) as client:
+        return client.post(
+            "/mcp",
+            json=_INIT_REQUEST,
+            headers={"Host": host, "Accept": "application/json, text/event-stream"},
+        ).status_code
+
+
+def test_build_app_honors_configured_allowed_hosts(offline_lifespan, monkeypatch):
+    # Stands in for MCP_ALLOWED_HOSTS=localhost on the deployment: the bare
+    # host the cloudflared tunnel actually forwards must be accepted, and
+    # anything unlisted must still be rejected (allowlist live, not bypassed).
+    monkeypatch.setattr(
+        server,
+        "_transport_security",
+        server.TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=server._LOOPBACK_HOSTS + ["localhost"],
+            allowed_origins=server._LOOPBACK_ORIGINS,
+        ),
+    )
+    assert _status_for_host("localhost") == 200
+    assert _status_for_host("evil.example") == 421
+
+
+def test_build_app_without_config_keeps_stock_loopback_only(
+    offline_lifespan, monkeypatch
+):
+    # MCP_ALLOWED_HOSTS unset -> None -> the library's stock allowlist. Pins
+    # the gotcha the deployment depends on: the built-in loopback entries are
+    # `host:port` forms, so a *bare* `localhost` (no port) is NOT covered and
+    # must be listed explicitly. If a future mcp release starts accepting it,
+    # this test fails and the deployment note needs revisiting.
+    monkeypatch.setattr(server, "_transport_security", None)
+    assert _status_for_host("localhost") == 421
+    assert _status_for_host("127.0.0.1:8000") == 200

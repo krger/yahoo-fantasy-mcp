@@ -697,9 +697,9 @@ async def app_lifespan(server):
 # local dev) keeps working; an unset MCP_ALLOWED_HOSTS leaves the stock
 # behavior. The deployment's hostname lives in the environment, not the repo.
 #
-# Applied at the entry point via streamable_http_app(transport_security=...) —
-# mcp 2.0 moved this off the server constructor. Dropping it there silently
-# reverts to the loopback-only default, which 421s every tunneled request.
+# Applied in build_app() below, not on the MCPServer constructor — mcp 2.0
+# moved it. Dropping it there silently reverts to the loopback-only default,
+# which 421s every tunneled request.
 _LOOPBACK_HOSTS = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
 _LOOPBACK_ORIGINS = ["http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"]
 
@@ -715,6 +715,17 @@ mcp = MCPServer(
     "yahoo_fantasy_mcp",
     lifespan=app_lifespan,
 )
+
+
+def build_app():
+    """Build the streamable-HTTP ASGI app, with Host validation wired in.
+
+    Exists as a function purely so the ``transport_security`` wiring is
+    reachable from tests: losing it here is a silent production outage (every
+    tunneled request 421s) that no import-level or handler test would catch.
+    Reads ``_transport_security`` at call time so tests can substitute one.
+    """
+    return mcp.streamable_http_app(transport_security=_transport_security)
 
 
 # ---------------------------------------------------------------------------
@@ -2087,5 +2098,4 @@ if __name__ == "__main__":
     # Bind loopback only: the server has no auth of its own (edge auth fronts
     # it) and the reverse proxy/tunnel connects over localhost, so there is no
     # reason to expose the port on other interfaces.
-    app = mcp.streamable_http_app(transport_security=_transport_security)
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(build_app(), host="127.0.0.1", port=8000)
