@@ -5,6 +5,10 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # Assign so the PR notifies via "participating" — the repo is unwatched,
+    # and an unassigned bot PR mentions nobody, so it reaches no inbox.
+    assignees:
+      - "krger"
     open-pull-requests-limit: 10
     groups:
       # One PR per week for routine non-major bumps; majors stay separate
@@ -19,3 +23,5 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    assignees:
+      - "krger"
