@@ -61,6 +61,7 @@ from schemas import (
 # Pure Yahoo response parsers/normalizers (the unit-test target) live in their
 # own module; import the ones the tool handlers and free-agent fetch use.
 from yahoo_parsers import (
+    NoMatchupError,
     ScoringConfig,
     _flatten_raw_yahoo_player,
     _parse_matchup,
@@ -1393,16 +1394,30 @@ async def yahoo_get_matchup(params: GetMatchupInput = GetMatchupInput()) -> str:
         # opponent's key, so parse the raw response for the full breakdown.
         week = params.week if params.week is not None else lg.current_week()
         raw = tm.yhandler.get_matchup_raw(team_key, week)
-        matchup = _parse_matchup(raw, team_key, _get_scoring_config(sc, lg))
 
         team_name = teams[team_key].get("name", "Unknown")
-
         result = {
             "team_name": team_name,
             "team_key": team_key,
             "week": week,
-            "matchup": matchup,
         }
+
+        # A team with a playoff bye (or a week outside the schedule) has no
+        # matchup node. team_key was validated above, so this is a legitimate
+        # league state, not a bad id — report it as a result rather than an
+        # error that tells the caller to re-check a correct team number.
+        try:
+            result["matchup"] = _parse_matchup(
+                raw, team_key, _get_scoring_config(sc, lg)
+            )
+        except NoMatchupError:
+            result["matchup"] = None
+            result["note"] = (
+                f"{team_name} has no matchup in week {week} — a bye "
+                "(common for a top seed in the first playoff round) or a "
+                "week outside the league's schedule. Use "
+                "yahoo_get_scoreboard to see the week's other matchups."
+            )
         return json.dumps(result, indent=2, default=str)
 
     except Exception as e:
@@ -1935,8 +1950,11 @@ async def yahoo_get_player_notes(params: GetPlayerNotesInput) -> str:
             - player_name (str): Name or player_key.
 
     Returns:
-        str: JSON object with 'player' (name/team/status/status_full/
-             injury_note), 'notes' (list of {timestamp, note}), and 'count'.
+        str: JSON object with 'player' (name/pro_team/status/status_full/
+             injury_note) and the same 'status', 'status_full' and
+             'injury_note' at the top level. Note: Yahoo's Fantasy API
+             rejects the notes sub-resource (HTTP 400), so no news-item
+             list is returned — injury status is the authoritative signal.
     """
     try:
         sc = _get_oauth_session()

@@ -437,11 +437,26 @@ def _points_matchup_node(
             "stat_lines": stat_lines}
 
 
+class NoMatchupError(ValueError):
+    """Raised when a team simply has no matchup for the requested week.
+
+    Not an error in the caller's input: the team key is already validated
+    before parsing, so a missing matchup node means a legitimate league
+    state — a playoff **bye**, or a week outside the league's schedule.
+    Subclasses ``ValueError`` so existing handling stays correct; callers
+    that want to report it as a normal result catch this specifically.
+    """
+
+
 def _parse_matchup(raw: dict, my_team_key: str, scoring: ScoringConfig) -> dict:
     """Turn Yahoo's raw team-matchup response into a team-vs-opponent breakdown.
 
     Yahoo only returns the opponent's team_key from ``Team.matchup()``; the
     full stat breakdown lives in the raw response, so we parse it here.
+
+    Raises:
+        NoMatchupError: the team has no matchup this week (bye / out of
+            schedule). Distinct from a malformed response.
     """
     matchup = (
         raw.get("fantasy_content", {})
@@ -451,7 +466,7 @@ def _parse_matchup(raw: dict, my_team_key: str, scoring: ScoringConfig) -> dict:
         .get("matchup", {})
     )
     if not matchup:
-        raise ValueError("Matchup data not found in Yahoo response")
+        raise NoMatchupError("No matchup for this team in the requested week")
     return _parse_matchup_node(matchup, scoring, my_team_key)
 
 

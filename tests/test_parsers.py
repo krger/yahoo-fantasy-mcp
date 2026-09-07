@@ -180,6 +180,23 @@ def test_parse_matchup_raises_on_empty():
     raise AssertionError("expected ValueError when matchup node missing")
 
 
+def test_parse_matchup_missing_node_raises_no_matchup_error():
+    """A bye (no matchup node) is distinguishable from a malformed response.
+
+    The handler validates team_key before parsing, so a missing node means a
+    legitimate league state — a playoff bye — and must be reportable as a
+    result rather than a "check the ID" error.
+    """
+    try:
+        parsers._parse_matchup({"fantasy_content": {"team": [None, {}]}}, "469.l.1.t.5", SCORING)
+    except parsers.NoMatchupError:
+        pass
+    else:
+        raise AssertionError("expected NoMatchupError when matchup node missing")
+    # Still a ValueError, so existing broad handling keeps working.
+    assert issubclass(parsers.NoMatchupError, ValueError)
+
+
 def test_parse_scoreboard_returns_list_of_breakdowns():
     out = parsers._parse_scoreboard(fx.SCOREBOARD_RAW, SCORING)
     assert isinstance(out, list) and len(out) == 1
