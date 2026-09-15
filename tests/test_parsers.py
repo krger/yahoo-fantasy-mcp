@@ -250,6 +250,28 @@ def test_parse_matchup_node_points_neutral_winner():
     assert by["Rush Yds"]["values"] == {"470.l.1.t.3": "88", "470.l.1.t.8": "140"}
 
 
+def test_parse_matchup_node_points_live_shape_settled_week():
+    # The real NFL response (league 1529868, week 1, postevent): winner comes
+    # through, and stat_lines is empty because Yahoo sends no team_stats for a
+    # points league -- an empty list here is correct, not a parse failure.
+    m = parsers._parse_matchup_node(
+        fx.MATCHUP_NODE_POINTS_LIVE, SCORING_PTS, "470.l.1529868.t.4")
+    assert m["status"] == "postevent"
+    assert m["result"] == "loss"
+    assert m["team"]["points"] == 103.16
+    assert m["team"]["projected_points"] == 116.16
+    assert m["opponent"]["points"] == 132.10
+    assert m["stat_lines"] == []
+
+
+def test_parse_scoreboard_node_points_live_shape_winner_is_higher_scorer():
+    m = parsers._parse_matchup_node(fx.MATCHUP_NODE_POINTS_LIVE, SCORING_PTS)
+    assert m["winner"] == "470.l.1529868.t.8"
+    pts = {t["team_key"]: t["points"] for t in m["teams"]}
+    assert pts[m["winner"]] == max(pts.values())
+    assert m["stat_lines"] == []
+
+
 def test_parse_matchup_points_wrapper_unwraps_team_response():
     m = parsers._parse_matchup(fx.MATCHUP_RAW_POINTS, "470.l.1.t.3", SCORING_PTS)
     assert m["scoring"] == "points" and m["result"] == "win"
