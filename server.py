@@ -848,6 +848,11 @@ async def yahoo_get_standings(params: GetStandingsInput = GetStandingsInput()) -
     ``rank`` (ERA/WHIP ranked low-first). Category totals come from a separate
     Yahoo call; if it fails, standings still return without ``categories``.
 
+    ``games_back`` is null for the leader. In a points league (typical
+    football) it is null for every team, because Yahoo does not report games
+    back there; those teams carry ``points_for``/``points_against`` instead of
+    ``categories``.
+
     Args:
         params (GetStandingsInput): Validated input containing:
             - league_id (Optional[str]): League override, or None for default.
