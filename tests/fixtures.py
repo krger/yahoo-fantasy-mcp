@@ -121,8 +121,11 @@ SCOREBOARD_RAW = {
 # total (team_points.total) plus a matchup-level winner_team_key / is_tied --
 # there are NO per-category stat_winners. The team_stats lines are informational
 # only. Uses real NFL stat_ids (Pass Yds=4, Pass TD=5, Rush Yds=9, Rec TD=13).
-# NOTE: assembled on-spec ahead of a drafted NFL league; re-verify the live
-# matchup response shape once one exists.
+# NOTE: assembled on-spec ahead of a drafted NFL league. The winner half is
+# now live-confirmed (see MATCHUP_NODE_POINTS_LIVE below), but the team_stats
+# block here has NEVER been seen in a live NFL matchup response -- keep this
+# fixture as the "if Yahoo ever serves team-level stat lines" case, not as
+# evidence that it does.
 
 TEAM_NODE_PTS_3 = [
     [
@@ -194,6 +197,61 @@ SCOREBOARD_RAW_POINTS = {
             "count": 1, "0": {"matchup": MATCHUP_NODE_POINTS}}}}},
     ]}
 }
+
+# The live-observed points-league matchup node (NFL league 1529868, week 1,
+# checked 2026-09-15 once the week had settled to `postevent`). Two things
+# differ from the on-spec node above, and both are the real shape:
+#   * the team nodes carry team_points / team_projected_points but NO
+#     team_stats -- Yahoo serves no team-level stat aggregation for a points
+#     league, so `stat_lines` is legitimately empty even after a played week;
+#   * winner_team_key / is_tied are populated at postevent, which is what
+#     drives `result` / `winner`.
+# Reconstructed from the connector's parsed output (real team keys, names and
+# totals), so it covers exactly the fields the parser consumes.
+
+TEAM_NODE_PTS_LIVE_4 = [
+    [
+        {"team_key": "470.l.1529868.t.4"},
+        {"team_id": "4"},
+        {"name": "Lincolnshire Poachers"},
+        [],
+        {"is_owned_by_current_login": 1},
+    ],
+    {
+        "team_points": {"coverage_type": "week", "week": "1", "total": "103.16"},
+        "team_projected_points": {"coverage_type": "week", "week": "1", "total": "116.16"},
+    },
+]
+
+TEAM_NODE_PTS_LIVE_8 = [
+    [
+        {"team_key": "470.l.1529868.t.8"},
+        {"team_id": "8"},
+        {"name": "Raw-Lee"},
+        [],
+        {"is_owned_by_current_login": 0},
+    ],
+    {
+        "team_points": {"coverage_type": "week", "week": "1", "total": "132.10"},
+        "team_projected_points": {"coverage_type": "week", "week": "1", "total": "105.70"},
+    },
+]
+
+MATCHUP_NODE_POINTS_LIVE = {
+    "week": "1",
+    "week_start": "2026-09-09",
+    "week_end": "2026-09-14",
+    "status": "postevent",
+    "is_playoffs": "0",
+    "is_tied": 0,
+    "winner_team_key": "470.l.1529868.t.8",
+    "0": {"teams": {
+        "count": 2,
+        "0": {"team": TEAM_NODE_PTS_LIVE_4},
+        "1": {"team": TEAM_NODE_PTS_LIVE_8},
+    }},
+}
+
 
 # Points-league standings entries carry points_for / points_against (merged
 # from Yahoo's team_standings by yfa) instead of category totals.
