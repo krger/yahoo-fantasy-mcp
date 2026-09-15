@@ -354,6 +354,13 @@ def test_parse_standings_points_league_surfaces_points_for_against():
     assert "categories" not in leader
 
 
+def test_parse_standings_points_league_games_back_null_for_every_team():
+    # Yahoo omits games_back from points-league standings entirely, so every
+    # team -- not just the leader -- reports null rather than a number.
+    out = parsers._parse_standings(fx.STANDINGS_LIST_POINTS)
+    assert [t["games_back"] for t in out] == [None, None]
+
+
 # --- free-agent player flattening -----------------------------------------
 
 def test_flatten_raw_yahoo_player_meta_ownership_and_stats():

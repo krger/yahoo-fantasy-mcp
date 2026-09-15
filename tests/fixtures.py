@@ -254,7 +254,9 @@ MATCHUP_NODE_POINTS_LIVE = {
 
 
 # Points-league standings entries carry points_for / points_against (merged
-# from Yahoo's team_standings by yfa) instead of category totals.
+# from Yahoo's team_standings by yfa) instead of category totals. They carry
+# NO games_back -- not even the leader's "-" -- confirmed against the raw
+# league/{key}/standings response for NFL league 1529868 on 2026-09-15.
 STANDINGS_LIST_POINTS = [
     {
         "team_key": "470.l.1.t.3",
@@ -262,7 +264,6 @@ STANDINGS_LIST_POINTS = [
         "rank": "1",
         "playoff_seed": "1",
         "outcome_totals": {"wins": "10", "losses": "3", "ties": "0", "percentage": ".769"},
-        "games_back": "-",
         "points_for": "1543.22",
         "points_against": "1402.88",
     },
@@ -272,7 +273,6 @@ STANDINGS_LIST_POINTS = [
         "rank": "2",
         "playoff_seed": "2",
         "outcome_totals": {"wins": "9", "losses": "4", "ties": "0", "percentage": ".692"},
-        "games_back": "1",
         "points_for": "1498.10",
         "points_against": "1450.05",
     },
