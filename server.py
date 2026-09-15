@@ -851,7 +851,9 @@ async def yahoo_get_standings(params: GetStandingsInput = GetStandingsInput()) -
     ``games_back`` is null for the leader. In a points league (typical
     football) it is null for every team, because Yahoo does not report games
     back there; those teams carry ``points_for``/``points_against`` instead of
-    ``categories``.
+    ``categories``, plus a ``streak`` of ``{'type': 'win'|'loss'|'tie',
+    'length': <number>}``. ``streak`` is omitted entirely for a league Yahoo
+    does not report it for, so check for the key rather than expecting null.
 
     Args:
         params (GetStandingsInput): Validated input containing:

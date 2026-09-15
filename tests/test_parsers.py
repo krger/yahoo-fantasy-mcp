@@ -354,6 +354,21 @@ def test_parse_standings_points_league_surfaces_points_for_against():
     assert "categories" not in leader
 
 
+def test_parse_standings_surfaces_streak_when_yahoo_sends_it():
+    # Yahoo's points-league team_standings carry {type, value}; re-emitted as
+    # {type, length} with the length coerced to a number.
+    leader, second = parsers._parse_standings(fx.STANDINGS_LIST_POINTS)
+    assert leader["streak"] == {"type": "win", "length": 3}
+    assert second["streak"] == {"type": "loss", "length": 1}
+
+
+def test_parse_standings_omits_streak_when_absent():
+    # A categories league sends no streak block -- the key is absent entirely
+    # rather than null, matching how points_for/points_against are handled.
+    out = parsers._parse_standings(fx.STANDINGS_LIST)
+    assert all("streak" not in team for team in out)
+
+
 def test_parse_standings_points_league_games_back_null_for_every_team():
     # Yahoo omits games_back from points-league standings entirely, so every
     # team -- not just the leader -- reports null rather than a number.

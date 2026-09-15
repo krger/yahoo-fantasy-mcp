@@ -552,6 +552,12 @@ def _parse_standings(standings: list, season_categories: Optional[dict] = None) 
     leagues only). A **points** league (fantasy football) instead carries
     ``points_for`` / ``points_against`` on each standings entry (Yahoo's
     ``team_standings``); those are surfaced when present.
+
+    Yahoo also sends a ``streak`` block (``{type, value}``) in a points
+    league's ``team_standings`` — and, as of 2026-09-15, not in a categories
+    league's. It is re-emitted as ``{"type": ..., "length": <number>}`` only
+    when present, so a league that omits it simply has no ``streak`` key
+    rather than a null one (same rule as ``points_for``).
     """
     out = []
     for entry in standings:
@@ -576,6 +582,12 @@ def _parse_standings(standings: list, season_categories: Optional[dict] = None) 
             row["points_for"] = _to_number(entry.get("points_for"))
         if "points_against" in entry:
             row["points_against"] = _to_number(entry.get("points_against"))
+        streak = entry.get("streak")
+        if isinstance(streak, dict):
+            row["streak"] = {
+                "type": streak.get("type"),
+                "length": _to_number(streak.get("value")),
+            }
         if season_categories is not None:
             row["categories"] = season_categories.get(team_key, [])
         out.append(row)
