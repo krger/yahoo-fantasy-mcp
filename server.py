@@ -2405,11 +2405,12 @@ async def yahoo_get_players_batch(params: GetPlayersBatchInput) -> str:
     },
 )
 async def yahoo_get_player_notes(params: GetPlayerNotesInput) -> str:
-    """Fetch recent news, notes, and injury status for a single player.
+    """Fetch a single player's injury status.
 
-    Pulls Yahoo's player notes sub-resource plus the status / status_full /
-    injury_note fields on the base player resource. Single player only —
-    batching notes is not supported.
+    Reads the status / status_full / injury_note fields of Yahoo's base
+    player resource. Yahoo's Fantasy API does not serve the player news
+    items its website shows (the notes sub-resource is rejected with HTTP
+    400), so this returns injury status only, not news. Single player only.
 
     Args:
         params (GetPlayerNotesInput): Validated input containing:
