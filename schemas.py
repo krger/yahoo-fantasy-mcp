@@ -301,6 +301,6 @@ class GetPlayerNotesInput(LeagueScopedInput):
 
     player_name: str = Field(
         ...,
-        description="Full or partial player name. A player_key (e.g. 'mlb.p.12345', 'nfl.p.12345') is also accepted.",
+        description="Full or partial player name. A player_key (e.g. '470.p.12345', 'nfl.p.12345') is also accepted.",
         min_length=1,
     )

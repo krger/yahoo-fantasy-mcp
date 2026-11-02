@@ -26,6 +26,7 @@ league other than the configured default (``cfg.league_id``); see the
 import json
 import logging
 import os
+import re
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -1920,10 +1921,16 @@ async def yahoo_list_my_leagues() -> str:
 # Batch players + player notes (read-only)
 # ---------------------------------------------------------------------------
 
+# A Yahoo player_key: "<game>.p.<id>", where <game> is a numeric game key
+# ("470.p.30123", the form Yahoo itself returns) or a game code
+# ("nfl.p.30123", which Yahoo resolves to that sport's current season).
+_PLAYER_KEY_RE = re.compile(r"^(?:\d+|[a-z]+)\.p\.\d+$")
+
+
 def _resolve_player_key(lg: "yfa.League", name_or_key: str) -> Optional[str]:
     """Resolve a name to a Yahoo player_key. Pass-through if already a key."""
-    if "." in name_or_key and name_or_key.split(".")[0] in ("mlb", "nfl", "nba", "nhl"):
-        return name_or_key
+    if _PLAYER_KEY_RE.match(name_or_key.strip().lower()):
+        return name_or_key.strip().lower()
     try:
         details = lg.player_details(name_or_key)
     except Exception:
