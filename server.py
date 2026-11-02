@@ -254,7 +254,7 @@ def _get_league(sc: OAuth2, league_id: Optional[str] = None) -> yfa.League:
     if cfg.season is not None:
         # Season pinned: find the league among that year's leagues.
         for lid in gm.league_ids(year=cfg.season):
-            if target in lid:
+            if lid.endswith(f".l.{target}"):
                 lg = gm.to_league(lid)
                 lg.league_key = lid          # stash for later use
                 return lg
