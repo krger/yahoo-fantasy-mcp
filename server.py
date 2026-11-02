@@ -44,6 +44,7 @@ from config import load_config
 # Pydantic input models (the MCP tools' input contract) live in schemas.py;
 # import the ones used as handler parameter annotations.
 from schemas import (
+    GetDraftResultsInput,
     GetLeagueSettingsInput,
     GetMatchupInput,
     GetPlayerNotesInput,
@@ -66,6 +67,7 @@ from yahoo_parsers import (
     NoMatchupError,
     ScoringConfig,
     _flatten_raw_yahoo_player,
+    _parse_draft_results,
     _parse_matchup,
     _parse_my_leagues,
     _parse_scoreboard,
@@ -73,6 +75,7 @@ from yahoo_parsers import (
     _parse_team_season_stats,
     _rank_season_categories,
     _resolve_team_key,
+    _team_activity,
     build_scoring_config,
 )
 
@@ -378,13 +381,30 @@ def _format_player(player: dict) -> dict:
         # under a sport-neutral key so it reads correctly across MLB/NFL/etc.
         info["pro_team"] = player.get("editorial_team_abbr", "")
         info["player_id"] = player.get("player_id", "")
+        # Bye week (football): the flattened ``bye_week`` from the players
+        # collection, or raw meta's ``bye_weeks: {"week": "10"}`` from the
+        # player-lookup paths. Baseball sends neither.
+        bye = player.get("bye_week")
+        if bye is None and isinstance(player.get("bye_weeks"), dict):
+            raw_bye = player["bye_weeks"].get("week")
+            bye = int(raw_bye) if str(raw_bye).isdigit() else raw_bye
+        info["bye_week"] = "" if bye is None else bye
         info["percent_owned"] = player.get("percent_owned", "")
+        # Change since the previous period, and how widely the player is
+        # started — present when fetched with ;out=percent_owned/percent_started.
+        for key in ("percent_owned_delta", "percent_started", "percent_started_delta"):
+            info[key] = player.get(key, "")
     out = {k: v for k, v in info.items() if v != "" and v != []}
     # Per-category stats are present for free agents (fetched with ;out=stats);
     # roster/other callers won't have them, so only surface when non-empty.
     stats = player.get("stats") if isinstance(player, dict) else None
     if stats:
         out["stats"] = stats
+    # Fantasy-points total for the same coverage as ``stats`` — points
+    # leagues only (Yahoo sends no player_points in a categories league).
+    points = player.get("points") if isinstance(player, dict) else None
+    if points is not None:
+        out["points"] = points
     # Owner team is present only for taken players (fetched with ;out=ownership).
     ownership = player.get("ownership") if isinstance(player, dict) else None
     if ownership:
@@ -478,7 +498,7 @@ def _fetch_free_agents_raw(
     sort: Optional[str] = "AR",
     count: int = 25,
     time_period: Optional[str] = None,
-    out_fields: str = "percent_owned,stats",
+    out_fields: str = "percent_owned,percent_started,stats",
 ) -> list[dict]:
     """Call Yahoo's /players collection directly and return a list of flat
     player dicts matching the shape ``_format_player`` consumes.
@@ -525,8 +545,9 @@ def _fetch_free_agents_raw(
     start = 0
     while len(collected) < requested:
         page_filters = filters + [f"count={PAGE}", f"start={start}"]
-        # Request percent_owned + season stats (and, for taken players,
-        # ownership) inline so each player carries them without a follow-up call.
+        # Request percent owned/started + season stats (and, for taken
+        # players, ownership) inline so each player carries them without a
+        # follow-up call.
         filter_str = ";".join(page_filters) + f";out={out_fields}"
         url = (
             f"https://fantasysports.yahooapis.com/fantasy/v2/"
@@ -567,15 +588,20 @@ def _fetch_free_agents_raw(
     return collected[:requested]
 
 
-def _fetch_player_stats_by_keys(
-    sc: OAuth2, league_key: str, player_keys: list[str], scoring: ScoringConfig
+def _fetch_players_by_keys(
+    sc: OAuth2,
+    league_key: str,
+    player_keys: list[str],
+    scoring: ScoringConfig,
+    suffix: str,
 ) -> dict[str, dict]:
-    """Fetch season category stats for specific players, keyed by player_id.
+    """Fetch specific players with a sub-resource, keyed by player_id.
 
-    Uses the league players collection with an explicit ``player_keys`` filter
-    and ``;out=stats`` — the same response shape ``_flatten_raw_yahoo_player``
-    already parses for free agents. Chunked to Yahoo's 25-per-request cap.
-    Returns ``{player_id: stats_map}`` for players that had stats.
+    GETs ``league/{key}/players;player_keys=…{suffix}`` (e.g. ``;out=stats``,
+    ``/draft_analysis``) in chunks of Yahoo's 25-per-request cap and parses
+    each entry with ``_flatten_raw_yahoo_player`` — the same shape the
+    free-agent path reads. A failed chunk is logged and skipped, so callers
+    get whatever did come back. Returns ``{player_id: flat_player}``.
     """
     out: dict[str, dict] = {}
     PAGE = 25
@@ -584,12 +610,12 @@ def _fetch_player_stats_by_keys(
         keys_csv = quote(",".join(chunk), safe=",")
         url = (
             f"https://fantasysports.yahooapis.com/fantasy/v2/"
-            f"league/{league_key}/players;player_keys={keys_csv};out=stats?format=json"
+            f"league/{league_key}/players;player_keys={keys_csv}{suffix}?format=json"
         )
         resp = sc.session.get(url)
         if resp.status_code != 200:
             logger.warning(
-                f"Roster stats fetch returned {resp.status_code}: {resp.text[:200]}"
+                f"Players fetch ({suffix}) returned {resp.status_code}: {resp.text[:200]}"
             )
             continue
         league_data = resp.json().get("fantasy_content", {}).get("league", [])
@@ -603,9 +629,42 @@ def _fetch_player_stats_by_keys(
                 continue
             flat = _flatten_raw_yahoo_player(entry["player"], scoring)
             pid = flat.get("player_id")
-            if pid is not None and flat.get("stats"):
-                out[str(pid)] = flat["stats"]
+            if pid is not None:
+                out[str(pid)] = flat
     return out
+
+
+def _fetch_player_stats_by_keys(
+    sc: OAuth2,
+    league_key: str,
+    player_keys: list[str],
+    scoring: ScoringConfig,
+    *,
+    week: Optional[int] = None,
+    day: Optional[date] = None,
+) -> dict[str, dict]:
+    """Fetch stats for specific players, keyed by player_id.
+
+    Returns ``{player_id: flat_player}`` (the flattened dict, carrying
+    ``stats`` and, in a points league, ``points``) for players that had stats.
+
+    The coverage is the season (``;out=stats``) by default, one scoring
+    ``week`` (``/stats;type=week;week=N``), or one ``day``
+    (``/stats;type=date;date=YYYY-MM-DD``). Yahoo serves weekly player stats
+    for football but **silently returns none for baseball** (raw-checked
+    2026-11-02), which serves daily stats instead — so callers must treat an
+    empty result as "not offered for this sport", not an error.
+    """
+    if week is not None:
+        coverage = f"/stats;type=week;week={int(week)}"
+    elif day is not None:
+        coverage = f"/stats;type=date;date={day.isoformat()}"
+    else:
+        # Season coverage also brings percent owned/started (with deltas);
+        # bye_week rides in every player's meta regardless.
+        coverage = ";out=stats,percent_owned,percent_started"
+    players = _fetch_players_by_keys(sc, league_key, player_keys, scoring, coverage)
+    return {pid: flat for pid, flat in players.items() if flat.get("stats")}
 
 
 def _get_player_ownership(sc: OAuth2, league_key: str, player_id) -> dict:
@@ -832,6 +891,19 @@ async def yahoo_get_roster(params: GetRosterInput = GetRosterInput()) -> str:
     as set for a specific date (past or future), or 'week' for a scoring
     week. If both are given, 'day' wins.
 
+    With include_stats=true each player also gets 'stats' (season totals)
+    plus the period the roster covers: 'day_stats' when 'day' is given, else
+    'week_stats' for the scoring week ('week', or the current week), named
+    in the response's 'stats_week'. Yahoo serves weekly player stats for
+    football but not baseball, so a baseball roster gets no 'week_stats' —
+    pass 'day' there for a per-day stat line. In a points league (typical
+    football) players also carry 'points' (season fantasy points) and
+    'week_points' (fantasy points for stats_week; starters' week_points sum
+    to the matchup total). Categories leagues have no fantasy points, so
+    the *_points keys are absent there. include_stats also adds
+    'bye_week' (football), 'percent_owned' / 'percent_started' and their
+    '_delta' changes.
+
     Args:
         params (GetRosterInput): Validated input parameters containing:
             - team_number (Optional[int]): Team number (1-based), or None for own team.
@@ -877,8 +949,11 @@ async def yahoo_get_roster(params: GetRosterInput = GetRosterInput()) -> str:
         team_name = teams[team_key].get("name", f"Team {params.team_number or '?'}")
         formatted = [_format_player(p) for p in roster]
 
-        # Optionally enrich each player with season category totals (one
-        # batched call), merged in by player_id.
+        # Optionally enrich each player with season totals plus the period
+        # the roster was asked for — that 'day', else the scoring week ('week'
+        # or the current one) — one batched call each, merged by player_id.
+        # In a points league each carries a fantasy-points total too.
+        stats_week = None
         if params.include_stats and formatted:
             game_id = lg.league_key.split(".")[0]
             pkeys = [
@@ -886,13 +961,43 @@ async def yahoo_get_roster(params: GetRosterInput = GetRosterInput()) -> str:
                 for p in formatted
                 if p.get("player_id")
             ]
-            stats_by_id = _fetch_player_stats_by_keys(
-                sc, lg.league_key, pkeys, _get_scoring_config(sc, lg)
-            )
+            scoring = _get_scoring_config(sc, lg)
+            season_by_id = _fetch_player_stats_by_keys(sc, lg.league_key, pkeys, scoring)
+            period_by_id: dict[str, dict] = {}
+            if day_obj is not None:
+                period_by_id = _fetch_player_stats_by_keys(
+                    sc, lg.league_key, pkeys, scoring, day=day_obj
+                )
+                period = "day"
+            else:
+                period = "week"
+                stats_week = params.week
+                if stats_week is None:
+                    try:
+                        stats_week = int(lg.current_week())
+                    except Exception as e:
+                        logger.warning(f"current_week lookup failed: {e}")
+                if stats_week is not None:
+                    period_by_id = _fetch_player_stats_by_keys(
+                        sc, lg.league_key, pkeys, scoring, week=stats_week
+                    )
+                    if not period_by_id:
+                        # Yahoo offers no weekly player stats for this sport
+                        # (baseball); don't advertise a week nothing covers.
+                        stats_week = None
             for p in formatted:
-                stats = stats_by_id.get(str(p.get("player_id", "")))
-                if stats:
-                    p["stats"] = stats
+                pid = str(p.get("player_id", ""))
+                season = season_by_id.get(pid, {})
+                for key in ("bye_week", "percent_owned", "percent_owned_delta",
+                            "percent_started", "percent_started_delta"):
+                    if season.get(key) is not None:
+                        p[key] = season[key]
+                for prefix, src in (("", season_by_id), (f"{period}_", period_by_id)):
+                    flat = src.get(pid, {})
+                    if flat.get("stats"):
+                        p[f"{prefix}stats"] = flat["stats"]
+                    if flat.get("points") is not None:
+                        p[f"{prefix}points"] = flat["points"]
 
         result = {
             "team_name": team_name,
@@ -901,8 +1006,11 @@ async def yahoo_get_roster(params: GetRosterInput = GetRosterInput()) -> str:
             "day": params.day,
             "scope": "day" if params.day else ("week" if params.week else "current"),
             "roster_count": len(formatted),
-            "players": formatted,
         }
+        if stats_week is not None:
+            # The scoring week that week_stats / week_points cover.
+            result["stats_week"] = stats_week
+        result["players"] = formatted
         return json.dumps(result, indent=2, default=str)
 
     except Exception as e:
@@ -988,6 +1096,9 @@ async def yahoo_get_scoreboard(params: GetScoreboardInput = GetScoreboardInput()
     """Get the league scoreboard showing all matchups for a given week.
 
     Shows each head-to-head matchup with team names and scores/categories.
+    Where Yahoo provides it (points leagues / football), each team also
+    carries 'win_probability' (0-1, Yahoo's live estimate); the key is
+    omitted for leagues where Yahoo sends none (categories leagues).
 
     Args:
         params (GetScoreboardInput): Validated input containing:
@@ -1034,7 +1145,10 @@ async def yahoo_search_free_agents(
     percentage, and a ``stats`` map of the player's season totals per
     scoring category (derived from the league's own settings — e.g. baseball
     R/HR/RBI/SB/AVG and W/SV/K/ERA/WHIP, or football passing/rushing/receiving
-    yards and TDs).
+    yards and TDs). Also, when Yahoo sends them: 'percent_owned_delta' (change
+    since the previous period — a rising number flags a trending pickup),
+    'percent_started' and 'percent_started_delta', 'bye_week' (football),
+    and 'points' (season fantasy points, points leagues only).
 
     Args:
         params (SearchFreeAgentsInput): Validated input containing:
@@ -1113,7 +1227,8 @@ async def yahoo_get_waivers(params: GetWaiversInput = GetWaiversInput()) -> str:
     you spot a just-dropped useful player before he clears and time a claim
     (place the claim in the Yahoo UI — this server is read-only). Returns the
     same per-player shape as the free-agent search: name, positions, pro
-    team, percent owned, and a ``stats`` map of season category totals.
+    team, percent owned/started (with deltas), bye week (football), and a
+    ``stats`` map of season category totals.
 
     Args:
         params (GetWaiversInput): Validated input containing:
@@ -1182,8 +1297,8 @@ async def yahoo_get_taken_players(
     no other tool produces. Use it to find trade targets by category need
     (e.g. who holds the closers/SB sources, or the RB depth) without
     fetching all teams' rosters one by one. Each player also carries
-    positions, pro team, percent owned, and a ``stats`` map of season
-    category totals.
+    positions, pro team, percent owned/started (with deltas), bye week
+    (football), and a ``stats`` map of season category totals.
 
     Args:
         params (GetTakenPlayersInput): Validated input containing:
@@ -1214,7 +1329,7 @@ async def yahoo_get_taken_players(
             sort=params.sort or "AR",
             count=params.count or 300,
             time_period=params.time_period,
-            out_fields="percent_owned,stats,ownership",
+            out_fields="percent_owned,percent_started,stats,ownership",
         )
 
         formatted = [_format_player(p) for p in players]
@@ -1451,7 +1566,10 @@ async def yahoo_get_matchup(params: GetMatchupInput = GetMatchupInput()) -> str:
     """Get detailed head-to-head matchup information for a specific team.
 
     Shows the matchup opponent, category-by-category breakdown,
-    and current score for the specified week.
+    and current score for the specified week. Where Yahoo provides it
+    (points leagues / football), 'team' and 'opponent' also carry
+    'win_probability' (0-1, Yahoo's live estimate); the key is omitted for
+    leagues where Yahoo sends none (categories leagues).
 
     Args:
         params (GetMatchupInput): Validated input containing:
@@ -1808,6 +1926,102 @@ async def yahoo_get_transactions(
         return _handle_error(e)
 
 
+@mcp.tool(
+    name="yahoo_get_draft_results",
+    annotations={
+        "title": "Get Draft Results",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def yahoo_get_draft_results(
+    params: GetDraftResultsInput = GetDraftResultsInput(),
+) -> str:
+    """Get the league's draft: every pick in order, with Yahoo's draft analysis.
+
+    Each pick has 'pick' (overall number), 'round', 'team_key', 'team_name',
+    'cost' (auction drafts only), and 'player' (name, positions, pro_team,
+    player_id). Each player also carries 'draft_analysis' — **Yahoo-wide**
+    figures across all Yahoo leagues, not this league's draft: average_pick
+    (ADP), average_round, average_cost (auction value), percent_drafted,
+    plus preseason_* versions of each. Comparing a pick's 'pick' with its
+    average_pick shows reaches and steals. Before the draft, picks may have
+    no player yet ('player': null). Pass team_number for one team's picks.
+
+    Args:
+        params (GetDraftResultsInput): Validated input containing:
+            - team_number (Optional[int]): One team's picks, or None for all.
+            - league_id (Optional[str]): League override, or None for default.
+
+    Returns:
+        str: JSON object with the draft's picks.
+    """
+    try:
+        sc = _get_oauth_session()
+        lg = _get_league(sc, params.league_id)
+        teams = lg.teams()
+
+        team_key = None
+        if params.team_number is not None:
+            team_key = _resolve_team_key(lg, teams, params.team_number)
+            if team_key is None:
+                return (
+                    f"Error: Team number {params.team_number} not found. "
+                    f"League has {len(teams)} teams (valid range: 1-{len(teams)})."
+                )
+
+        url = (
+            "https://fantasysports.yahooapis.com/fantasy/v2/"
+            f"league/{lg.league_key}/draftresults?format=json"
+        )
+        resp = sc.session.get(url)
+        resp.raise_for_status()
+        picks = _parse_draft_results(resp.json())
+        if team_key is not None:
+            picks = [p for p in picks if p["team_key"] == team_key]
+
+        # One batched call per 25 players returns each player's meta plus
+        # the draft_analysis sub-resource.
+        pkeys = [p["player_key"] for p in picks if p["player_key"]]
+        players = _fetch_players_by_keys(
+            sc, lg.league_key, pkeys, _get_scoring_config(sc, lg), "/draft_analysis"
+        )
+
+        out = []
+        for p in picks:
+            entry = {
+                "pick": p["pick"],
+                "round": p["round"],
+                "team_key": p["team_key"],
+                "team_name": teams.get(p["team_key"], {}).get("name"),
+            }
+            if "cost" in p:
+                entry["cost"] = p["cost"]
+            player = None
+            if p["player_key"]:
+                flat = players.get(p["player_key"].rsplit(".p.", 1)[-1])
+                if flat:
+                    player = _format_player(flat)
+                    if flat.get("draft_analysis"):
+                        player["draft_analysis"] = flat["draft_analysis"]
+                else:
+                    player = {"player_key": p["player_key"]}  # lookup failed
+            entry["player"] = player
+            out.append(entry)
+
+        return json.dumps({
+            "league_id": _resolved_league_id(lg),
+            "team_key": team_key,
+            "pick_count": len(out),
+            "picks": out,
+        }, indent=2, default=str)
+
+    except Exception as e:
+        return _handle_error(e)
+
+
 def _team_manager_name(tinfo: dict) -> str:
     """The first manager's nickname from a ``lg.teams()`` entry.
 
@@ -1840,7 +2054,14 @@ async def yahoo_list_teams(params: ListTeamsInput = ListTeamsInput()) -> str:
     """List all teams in the league with their names, keys, and managers.
 
     Useful for finding team numbers to use with other tools like
-    yahoo_get_roster or yahoo_get_matchup.
+    yahoo_get_roster or yahoo_get_matchup. Each team also carries its
+    waiver and transaction state as Yahoo reports it: 'waiver_priority'
+    (1 = first claim), 'number_of_moves', 'number_of_trades', 'roster_adds'
+    ({week, count} — adds used in the current week, for leagues with a
+    weekly add limit), 'draft_position', and when applicable
+    'draft_grade', 'clinched_playoffs', 'faab_balance' (FAAB leagues) and
+    'auction_budget_total'/'auction_budget_spent' (auction drafts). A field
+    Yahoo doesn't send for the league is omitted, not zeroed.
 
     Args:
         params (ListTeamsInput): Validated input containing:
@@ -1869,6 +2090,7 @@ async def yahoo_list_teams(params: ListTeamsInput = ListTeamsInput()) -> str:
                 "name": tinfo.get("name", "Unknown"),
                 "manager": _team_manager_name(tinfo),
                 "is_your_team": str(tinfo.get("is_owned_by_current_login")) in ("1", "True"),
+                **_team_activity(tinfo),
             })
         # Sort by team_number for a stable, intuitive display order.
         team_list.sort(key=lambda t: (t["team_number"] is None, t["team_number"]))
@@ -2212,6 +2434,7 @@ def analyze_matchup(team_number: str = "") -> str:
     """Summarize the current head-to-head matchup (categories or points)."""
     whose = f"team {team_number}" if team_number else "my team"
     arg = f" with team_number={team_number}" if team_number else ""
+    roster_args = f"team_number={team_number}, " if team_number else ""
     return (
         f"Analyze {whose}'s current head-to-head matchup. Call yahoo_get_matchup{arg}. "
         "The result's `scoring` field says how the league is scored. If "
@@ -2219,7 +2442,9 @@ def analyze_matchup(team_number: str = "") -> str:
         "tied, with current values and margins, call out the closest and the "
         "effectively-decided ones, and give the projected category score. If "
         "`points`: report both teams' fantasy-points totals (and projected_points), "
-        "the current margin, and whether it's a likely win, loss, or tossup. "
+        "the current margin, and Yahoo's win_probability when present, then call "
+        f"yahoo_get_roster with {roster_args}include_stats=true and use each starter's "
+        "week_points to say who has carried the week. "
         "Finish with one sentence on where the matchup will be won or lost. "
         "If I mention a specific league, call yahoo_list_my_leagues first and pass "
         "the matching league_id to the tools."
@@ -2231,6 +2456,7 @@ def waiver_help(team_number: str = "") -> str:
     """Find free-agent pickups that target the categories I'm losing."""
     whose = f"team {team_number}" if team_number else "my team"
     arg = f" with team_number={team_number}" if team_number else ""
+    roster_args = f"team_number={team_number}, " if team_number else ""
     return (
         f"Help me find waiver pickups for {whose}.\n"
         f"1. Call yahoo_get_matchup{arg} and note the `scoring` field.\n"
@@ -2239,10 +2465,12 @@ def waiver_help(team_number: str = "") -> str:
         "yahoo_search_free_agents sorted by that category's stat with "
         "time_period=lastweek to surface players in good recent form (e.g. sort=SB "
         "for steals, sort=HR for power, or the football stat label for the need). "
-        "If a points league: identify my weakest starting spots (injuries, byes, "
-        "low output), then call yahoo_search_free_agents by position (sorted by AR "
-        "or a relevant stat, time_period=lastweek) to find the best available "
-        "upgrades.\n"
+        f"If a points league: call yahoo_get_roster with {roster_args}include_stats=true and "
+        "identify my weakest starting spots (injuries, upcoming bye_week, low "
+        "points/week_points), then call yahoo_search_free_agents by position "
+        "(sort=PTS, or time_period=lastweek with a stat sort) to find the best "
+        "available upgrades. In either league, a large positive "
+        "percent_owned_delta flags a player other managers are grabbing.\n"
         "3. Recommend 3-5 available players who would most improve my team, each "
         "with a one-line rationale and their recent numbers.\n"
         "If I mention a specific league, call yahoo_list_my_leagues first and pass "

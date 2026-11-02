@@ -136,6 +136,26 @@ def _to_number(value):
     return value
 
 
+def _value_and_delta(node) -> tuple:
+    """Read ``(value, delta)`` from a Yahoo percent_owned/percent_started
+    node — ``{"value": 24, "delta": "1"}`` or ``[{coverage}, {"value": 91},
+    {"delta": 18}]`` (live shapes, 2026-11-02). Missing parts are ``None``;
+    numbers are coerced (Yahoo sends ``delta`` as a string)."""
+    parts: dict = {}
+    if isinstance(node, dict):
+        parts = node
+    elif isinstance(node, list):
+        for sub in node:
+            if isinstance(sub, dict):
+                parts = {**parts, **sub}
+    value = parts.get("value")
+    delta = parts.get("delta")
+    return (
+        _to_number(value) if value not in (None, "") else None,
+        _to_number(delta) if delta not in (None, "") else None,
+    )
+
+
 def _flatten_raw_yahoo_player(player_entry: list, scoring: ScoringConfig) -> dict:
     """Flatten Yahoo's list-of-dicts player representation into the flat
     shape that ``_format_player`` expects.
@@ -173,6 +193,10 @@ def _flatten_raw_yahoo_player(player_entry: list, scoring: ScoringConfig) -> dic
                 flat["status_full"] = item["status_full"]
             if "display_position" in item:
                 flat.setdefault("display_position", item["display_position"])
+            # bye_weeks is {"week": "10"} for football; baseball sends none.
+            bw = item.get("bye_weeks")
+            if isinstance(bw, dict) and bw.get("week") not in (None, ""):
+                flat["bye_week"] = _to_int(str(bw["week"]))
             if "eligible_positions" in item:
                 eps = item["eligible_positions"]
                 if isinstance(eps, list):
@@ -186,14 +210,17 @@ def _flatten_raw_yahoo_player(player_entry: list, scoring: ScoringConfig) -> dic
     for extra in player_entry[1:]:
         if not isinstance(extra, dict):
             continue
-        po = extra.get("percent_owned")
-        if isinstance(po, dict) and "value" in po:
-            flat["percent_owned"] = po["value"]
-        elif isinstance(po, list):
-            for sub in po:
-                if isinstance(sub, dict) and "value" in sub:
-                    flat["percent_owned"] = sub["value"]
-                    break
+        # percent_owned / percent_started: a value plus the change since the
+        # previous coverage period (``delta``), as a dict or as a list of
+        # single-key dicts after a coverage header. Either part can be absent
+        # (a widely-unowned player may carry only a delta; percent_started can
+        # be a bare coverage header), so each is surfaced only when present.
+        for res in ("percent_owned", "percent_started"):
+            value, delta = _value_and_delta(extra.get(res))
+            if value is not None:
+                flat[res] = value
+            if delta is not None:
+                flat[f"{res}_delta"] = delta
 
         ps = extra.get("player_stats")
         if isinstance(ps, dict):
@@ -205,6 +232,30 @@ def _flatten_raw_yahoo_player(player_entry: list, scoring: ScoringConfig) -> dic
                     stats[scoring.label(str(sid))] = _to_number(st.get("value"))
             if stats:
                 flat["stats"] = stats
+
+        # player_points rides alongside player_stats in a **points** league
+        # (fantasy football): the player's fantasy-points total for the same
+        # coverage as the stats (season, or the week asked for). A categories
+        # league sends no player_points at all, so the key stays absent there.
+        pp = extra.get("player_points")
+        if isinstance(pp, dict) and pp.get("total") is not None:
+            flat["points"] = _to_number(pp["total"])
+
+        # draft_analysis (the /draft_analysis sub-resource) is a list of
+        # single-key dicts: average_pick/round/cost, percent_drafted, and
+        # preseason_* twins. Yahoo-wide figures, not this league's draft.
+        # "-" (never drafted anywhere) is dropped rather than kept as a string.
+        da = extra.get("draft_analysis")
+        if isinstance(da, list):
+            analysis = {}
+            for item in da:
+                if not isinstance(item, dict):
+                    continue
+                for k, v in item.items():
+                    if v not in (None, "", "-"):
+                        analysis[k] = _to_number(v)
+            if analysis:
+                flat["draft_analysis"] = analysis
 
         # ownership (present when requested via ;out=ownership) carries the
         # fantasy team that holds the player — the distinguishing field for
@@ -238,6 +289,7 @@ def _extract_team_summary(team_node: list) -> dict:
     stats = {}
     points = None
     projected = None
+    win_probability = None
     for part in team_node[1:]:
         if not isinstance(part, dict):
             continue
@@ -251,6 +303,12 @@ def _extract_team_summary(team_node: list) -> dict:
         # Present in points-league (football) matchups; None for categories.
         if "team_projected_points" in part:
             projected = part["team_projected_points"].get("total")
+        # Yahoo's live win probability (0-1). Seen on points-league (NFL)
+        # matchups; absent from the categories (MLB) league, so None there.
+        # Rounded: Yahoo emits float noise like 0.010000000000000009.
+        if part.get("win_probability") is not None:
+            wp = _to_number(part["win_probability"])
+            win_probability = round(wp, 4) if isinstance(wp, float) else wp
 
     return {
         "team_key": info.get("team_key"),
@@ -261,7 +319,17 @@ def _extract_team_summary(team_node: list) -> dict:
         # framing re-surfaces it as ``points``.
         "category_points": points,
         "projected_points": projected,
+        "win_probability": win_probability,
     }
+
+
+def _with_win_probability(info: dict, summary: dict) -> dict:
+    """Add ``win_probability`` to a team's output only when Yahoo sent one,
+    so a league that never carries it gets no key (not a null) — the same
+    sent-only rule as standings' ``streak``."""
+    if summary.get("win_probability") is not None:
+        info["win_probability"] = summary["win_probability"]
+    return info
 
 
 def _parse_matchup_node(
@@ -313,11 +381,11 @@ def _parse_matchup_node(
         winners[sid] = "tie" if _is_set(sw.get("is_tied")) else sw.get("winner_team_key")
 
     def _team_info(s):
-        return {
+        return _with_win_probability({
             "team_key": s["team_key"],
             "name": s["name"],
             "category_points": _to_int(s["category_points"]),
-        }
+        }, s)
 
     if perspective_team_key is not None:
         me = next((s for s in summaries if s["team_key"] == perspective_team_key), None)
@@ -389,13 +457,13 @@ def _points_matchup_node(
     is_tied = _is_set(matchup.get("is_tied"))
 
     def _team_info(s):
-        return {
+        return _with_win_probability({
             "team_key": s["team_key"],
             "name": s["name"],
             "points": _to_number(s["category_points"]),
             "projected_points": _to_number(s["projected_points"])
             if s.get("projected_points") is not None else None,
-        }
+        }, s)
 
     if perspective_team_key is not None:
         me = next((s for s in summaries if s["team_key"] == perspective_team_key), None)
@@ -598,6 +666,80 @@ def _parse_standings(standings: list, season_categories: Optional[dict] = None) 
         if season_categories is not None:
             row["categories"] = season_categories.get(team_key, [])
         out.append(row)
+    return out
+
+
+def _parse_draft_results(raw: dict) -> list[dict]:
+    """Flatten ``league/{key}/draftresults`` into a pick-ordered list.
+
+    Yahoo nests picks as ``league[1].draft_results`` — a ``"0".."N"`` +
+    ``count`` collection of ``{"draft_result": {pick, round, team_key,
+    player_key[, cost]}}`` (live NFL/MLB shape, 2026-11-02). Before a draft
+    the collection can be empty (or a bare ``[]``) and picks can lack a
+    ``player_key``; such picks are kept with ``player_key: None`` so the draft
+    order still shows. ``cost`` appears only in auction drafts.
+    """
+    league = raw.get("fantasy_content", {}).get("league") if isinstance(raw, dict) else None
+    if not isinstance(league, list) or len(league) < 2 or not isinstance(league[1], dict):
+        return []
+    coll = league[1].get("draft_results")
+    if not isinstance(coll, dict):
+        return []
+    picks = []
+    for key, val in coll.items():
+        if key == "count" or not isinstance(val, dict):
+            continue
+        dr = val.get("draft_result")
+        if not isinstance(dr, dict):
+            continue
+        pick = {
+            "pick": _to_int(dr.get("pick")),
+            "round": _to_int(dr.get("round")),
+            "team_key": dr.get("team_key"),
+            "player_key": dr.get("player_key") or None,
+        }
+        if dr.get("cost") not in (None, ""):
+            pick["cost"] = _to_number(dr["cost"])
+        picks.append(pick)
+    picks.sort(key=lambda p: p["pick"] if isinstance(p["pick"], int) else 10**9)
+    return picks
+
+
+def _team_activity(tinfo: dict) -> dict:
+    """Normalize the waiver/transaction/draft fields of one ``lg.teams()``
+    entry (Yahoo's team metadata, merged by yfa).
+
+    Emits only the fields Yahoo sent — the set differs by league and state
+    (``draft_grade`` appears only once graded, ``clinched_playoffs`` only once
+    clinched, ``faab_balance`` / auction budgets only where FAAB or an
+    auction draft is in use) — so absent means "not applicable here", never
+    zero. Counts are coerced to numbers. ``roster_adds`` (Yahoo's
+    ``{coverage_type, coverage_value, value}``) becomes ``{"week": N,
+    "count": N}`` for its usual weekly coverage, keeping the coverage fields
+    for any other.
+    """
+    out: dict = {}
+    for key in ("waiver_priority", "number_of_moves", "number_of_trades",
+                "draft_position"):
+        if tinfo.get(key) not in (None, ""):
+            out[key] = _to_int(tinfo[key])
+    for key in ("faab_balance", "auction_budget_total", "auction_budget_spent"):
+        if tinfo.get(key) not in (None, ""):
+            out[key] = _to_number(tinfo[key])
+    adds = tinfo.get("roster_adds")
+    if isinstance(adds, dict) and adds.get("value") not in (None, ""):
+        count = _to_int(str(adds["value"]))
+        if adds.get("coverage_type") == "week":
+            out["roster_adds"] = {"week": _to_int(str(adds.get("coverage_value"))),
+                                  "count": count}
+        else:
+            out["roster_adds"] = {"coverage_type": adds.get("coverage_type"),
+                                  "coverage_value": adds.get("coverage_value"),
+                                  "count": count}
+    if tinfo.get("draft_grade"):
+        out["draft_grade"] = tinfo["draft_grade"]
+    if tinfo.get("clinched_playoffs") is not None:
+        out["clinched_playoffs"] = _is_set(tinfo["clinched_playoffs"])
     return out
 
 

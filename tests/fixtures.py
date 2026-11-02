@@ -207,7 +207,9 @@ SCOREBOARD_RAW_POINTS = {
 #   * winner_team_key / is_tied are populated at postevent, which is what
 #     drives `result` / `winner`.
 # Reconstructed from the connector's parsed output (real team keys, names and
-# totals), so it covers exactly the fields the parser consumes.
+# totals), so it covers exactly the fields the parser consumes. Each team node
+# also carries a `win_probability` (a bare 0-1 number, settled to 0 / 1 here);
+# values from the raw team/{key}/matchups response, re-checked 2026-11-02.
 
 TEAM_NODE_PTS_LIVE_4 = [
     [
@@ -218,6 +220,7 @@ TEAM_NODE_PTS_LIVE_4 = [
         {"is_owned_by_current_login": 1},
     ],
     {
+        "win_probability": 0,
         "team_points": {"coverage_type": "week", "week": "1", "total": "103.16"},
         "team_projected_points": {"coverage_type": "week", "week": "1", "total": "116.16"},
     },
@@ -232,6 +235,7 @@ TEAM_NODE_PTS_LIVE_8 = [
         {"is_owned_by_current_login": 0},
     ],
     {
+        "win_probability": 1,
         "team_points": {"coverage_type": "week", "week": "1", "total": "132.10"},
         "team_projected_points": {"coverage_type": "week", "week": "1", "total": "105.70"},
     },
@@ -383,6 +387,87 @@ PLAYER_ENTRY_OWNED = [
         {"stat": {"stat_id": "32", "value": "14"}},  # SV
         {"stat": {"stat_id": "42", "value": "31"}},  # K
     ]}},
+]
+
+
+# A points-league (NFL) player from players;player_keys=…/stats;type=week;week=8,
+# shaped like the live response for league 1529868 (raw-checked 2026-11-02):
+# player_points sits beside player_stats with the same coverage. Values are
+# Joe Burrow's real week-8 line. A categories league sends no player_points.
+PLAYER_ENTRY_POINTS_WEEK = [
+    [
+        {"player_key": "470.p.32671"},
+        {"player_id": "32671"},
+        {"name": {"full": "Joe Burrow", "first": "Joe", "last": "Burrow"}},
+        {"editorial_team_abbr": "Cin"},
+        {"display_position": "QB"},
+        {"position_type": "O"},
+        {"bye_weeks": {"week": "6"}},
+        {"eligible_positions": [{"position": "QB"}]},
+    ],
+    {
+        "player_stats": {
+            "0": {"coverage_type": "week", "week": "8"},
+            "stats": [
+                {"stat": {"stat_id": "4", "value": "462"}},  # Pass Yds
+                {"stat": {"stat_id": "5", "value": "5"}},    # Pass TD
+                {"stat": {"stat_id": "6", "value": "3"}},    # Int
+            ],
+        },
+        "player_points": {
+            "0": {"coverage_type": "week", "week": "8"},
+            "total": "42.48",
+        },
+    },
+]
+
+
+# percent_owned / percent_started sub-resources in their live list form
+# (players;…;out=percent_owned,percent_started, NFL 1529868, 2026-11-02):
+# a coverage header then single-key value/delta dicts. Burrow's real figures.
+PLAYER_ENTRY_TRENDING = [
+    PLAYER_ENTRY_POINTS_WEEK[0],
+    {"percent_owned": [{"coverage_type": "week", "week": "8"},
+                       {"value": 100}, {"delta": "1"}]},
+    {"percent_started": [{"coverage_type": "week", "week": 8},
+                         {"value": 91}, {"delta": 18}]},
+]
+
+
+# --- draft (live NFL 1529868 shapes, raw-checked 2026-11-02) ---------------
+# league/{key}/draftresults: picks as a "0".."N" + count collection of
+# {"draft_result": {...}}; real first three picks of the league's draft.
+DRAFT_RESULTS_RAW = {"fantasy_content": {"league": [
+    {"league_key": "470.l.1529868", "league_id": "1529868"},
+    {"draft_results": {
+        "0": {"draft_result": {"pick": 1, "round": 1,
+                               "team_key": "470.l.1529868.t.7", "player_key": "470.p.40059"}},
+        "1": {"draft_result": {"pick": 2, "round": 1,
+                               "team_key": "470.l.1529868.t.4", "player_key": "470.p.40055"}},
+        "2": {"draft_result": {"pick": 3, "round": 1,
+                               "team_key": "470.l.1529868.t.1", "player_key": "470.p.33393"}},
+        "count": 3,
+    }},
+]}}
+
+# A player from players;player_keys=…/draft_analysis: meta plus the
+# draft_analysis list of single-key dicts (Bijan Robinson's real figures).
+PLAYER_ENTRY_DRAFT_ANALYSIS = [
+    [
+        {"player_key": "470.p.40055"},
+        {"player_id": "40055"},
+        {"name": {"full": "Bijan Robinson", "first": "Bijan", "last": "Robinson"}},
+        {"editorial_team_abbr": "Atl"},
+        {"display_position": "RB"},
+        {"position_type": "O"},
+        {"eligible_positions": [{"position": "RB"}, {"position": "W/R/T"}]},
+    ],
+    {"draft_analysis": [
+        {"average_pick": "2.1"}, {"average_round": "1.0"},
+        {"average_cost": "70.9"}, {"percent_drafted": "1.00"},
+        {"preseason_average_pick": "2.1"}, {"preseason_average_round": "1.0"},
+        {"preseason_average_cost": "70.9"}, {"preseason_percent_drafted": "1.0"},
+    ]},
 ]
 
 

@@ -297,6 +297,23 @@ def test_format_player_flattens_raw_yahoo_player_meta():
     assert out["eligible_positions"] == ["QB", "SUPERFLEX"]
 
 
+def test_format_player_bye_week_and_percent_fields():
+    # Raw meta (player-lookup paths) carries bye_weeks as {"week": "10"}.
+    out = server._format_player({"name": "X", "bye_weeks": {"week": "10"}})
+    assert out["bye_week"] == 10
+    # Flattened players-collection fields pass through; a 0 delta is kept.
+    out = server._format_player({
+        "name": "Y", "bye_week": 6, "percent_owned": 100,
+        "percent_owned_delta": 0, "percent_started": 91,
+        "percent_started_delta": 18,
+    })
+    assert (out["bye_week"], out["percent_owned_delta"], out["percent_started"],
+            out["percent_started_delta"]) == (6, 0, 91, 18)
+    # Baseball: nothing sent, nothing emitted.
+    out = server._format_player({"name": "Z"})
+    assert not {"bye_week", "percent_started", "percent_owned_delta"} & set(out)
+
+
 def test_format_player_keeps_already_flat_shape():
     # roster/free-agent input is already flat and must pass through unchanged.
     out = server._format_player({
@@ -417,6 +434,7 @@ _FULLY_OPTIONAL_TOOLS = {
     "yahoo_get_matchup",
     "yahoo_get_transactions",
     "yahoo_list_teams",
+    "yahoo_get_draft_results",
     "yahoo_list_my_leagues",  # takes no params argument at all
 }
 
@@ -770,6 +788,188 @@ def test_team_manager_name_falls_back_to_unknown():
     # Yahoo hides some nicknames as "--hidden--"; that is still a real value.
     hidden = {"managers": [{"manager": {"nickname": "--hidden--"}}]}
     assert server._team_manager_name(hidden) == "--hidden--"
+
+
+# --- roster stats enrichment ------------------------------------------------
+#
+# include_stats fetches season totals (;out=stats) and, unless a single 'day'
+# was asked for, the scoring week's stats (/stats;type=week;week=N). In a
+# points league both carry player_points, surfaced as points / week_points.
+
+
+def _players_response(entries):
+    block = {str(i): {"player": e} for i, e in enumerate(entries)}
+    block["count"] = len(entries)
+    return {"fantasy_content": {"league": [{"league_key": _LK}, {"players": block}]}}
+
+
+def _with_points(entry, total, stats=None):
+    import copy
+    e = copy.deepcopy(entry)
+    e[1]["player_points"]["total"] = total
+    if stats is not None:
+        e[1]["player_stats"]["stats"] = stats
+    return e
+
+
+class _StatsSession:
+    """Serves season vs per-period (week/date) player stats by URL shape and
+    records each URL requested."""
+
+    def __init__(self, season, period):
+        self.season, self.period, self.urls = season, period, []
+
+    def get(self, url):
+        self.urls.append(url)
+        body = self.period if "/stats;type=" in url else self.season
+        return type("_Resp", (), {"status_code": 200, "json": lambda self: body})()
+
+
+def _run_roster(monkeypatch, *, period_empty=False, **kw):
+    import json as _json
+
+    from tests import fixtures as fx
+    from yahoo_parsers import build_scoring_config
+
+    season = _players_response([_with_points(
+        fx.PLAYER_ENTRY_POINTS_WEEK, "175.60",
+        [{"stat": {"stat_id": "4", "value": "2101"}}],
+    )])
+    # Baseball's weekly response: the player comes back with meta only.
+    period = (_players_response([[fx.PLAYER_ENTRY_POINTS_WEEK[0]]])
+              if period_empty else _players_response([fx.PLAYER_ENTRY_POINTS_WEEK]))
+    session = _StatsSession(season, period)
+    sc = type("_SC", (), {"session": session})()
+    tk = f"{_LK}.t.4"
+    team = type("_TM", (), {})()
+    team.roster = lambda **kw: [{"player_id": "32671", "name": "Joe Burrow"}]
+    lg = type("_LG", (), {"league_key": _LK})()
+    lg.teams = lambda: {tk: {"name": "Poachers", "is_owned_by_current_login": 1}}
+    lg.to_team = lambda key: team
+    lg.current_week = lambda: 8
+    monkeypatch.setattr(server, "_get_oauth_session", lambda: sc)
+    monkeypatch.setattr(server, "_get_league", lambda sc, lid: lg)
+    monkeypatch.setattr(server, "_get_scoring_config",
+                        lambda sc, lg: build_scoring_config(fx.SETTINGS_RAW_POINTS))
+    out = asyncio.run(server.yahoo_get_roster(server.GetRosterInput(**kw)))
+    return _json.loads(out), session.urls
+
+
+def test_roster_include_stats_adds_season_and_current_week_points(monkeypatch):
+    res, urls = _run_roster(monkeypatch, include_stats=True)
+    p = res["players"][0]
+    assert p["stats"] == {"Pass Yds": 2101}
+    assert p["points"] == 175.6
+    assert p["week_stats"] == {"Pass Yds": 462, "Pass TD": 5, "Int": 3}
+    assert p["week_points"] == 42.48
+    assert res["stats_week"] == 8  # resolved to the current week
+    assert any("/stats;type=week;week=8" in u for u in urls)
+    assert p["bye_week"] == 6  # from the season fetch's player meta
+    season_url = next(u for u in urls if "/stats;type=" not in u)
+    assert ";out=stats,percent_owned,percent_started" in season_url
+
+
+def test_roster_include_stats_uses_requested_week(monkeypatch):
+    res, urls = _run_roster(monkeypatch, include_stats=True, week=3)
+    assert res["stats_week"] == 3
+    assert any("/stats;type=week;week=3" in u for u in urls)
+
+
+def test_roster_include_stats_with_day_fetches_that_day(monkeypatch):
+    res, urls = _run_roster(monkeypatch, include_stats=True, day="2026-11-01")
+    p = res["players"][0]
+    assert p["points"] == 175.6
+    assert p["day_stats"] == {"Pass Yds": 462, "Pass TD": 5, "Int": 3}
+    assert "week_stats" not in p and "week_points" not in p
+    assert "stats_week" not in res
+    assert any("/stats;type=date;date=2026-11-01" in u for u in urls)
+    assert not any("type=week" in u for u in urls)
+
+
+def test_roster_weekly_stats_absent_when_sport_serves_none(monkeypatch):
+    # Baseball: Yahoo answers type=week with meta-only players. The roster
+    # still returns season stats and simply omits the weekly fields.
+    res, _ = _run_roster(monkeypatch, include_stats=True, period_empty=True)
+    p = res["players"][0]
+    assert p["stats"] == {"Pass Yds": 2101}
+    assert "week_stats" not in p and "week_points" not in p
+    assert "stats_week" not in res
+
+
+def test_roster_without_include_stats_makes_no_stats_calls(monkeypatch):
+    res, urls = _run_roster(monkeypatch)
+    assert urls == []
+    assert "points" not in res["players"][0]
+    assert "stats_week" not in res
+
+
+# --- draft results ----------------------------------------------------------
+
+
+class _DraftSession:
+    """Serves draftresults and the players/draft_analysis lookup; records URLs."""
+
+    def __init__(self, draft, players):
+        self.draft, self.players, self.urls = draft, players, []
+
+    def get(self, url):
+        self.urls.append(url)
+        body = self.draft if "/draftresults" in url else self.players
+        resp = type("_Resp", (), {"status_code": 200, "json": lambda self: body})()
+        resp.raise_for_status = lambda: None
+        return resp
+
+
+def _run_draft(monkeypatch, **kw):
+    import json as _json
+
+    from tests import fixtures as fx
+    from yahoo_parsers import build_scoring_config
+
+    session = _DraftSession(
+        fx.DRAFT_RESULTS_RAW, _players_response([fx.PLAYER_ENTRY_DRAFT_ANALYSIS])
+    )
+    sc = type("_SC", (), {"session": session})()
+    lk = "470.l.1529868"
+    lg = type("_LG", (), {"league_key": lk})()
+    lg.teams = lambda: {f"{lk}.t.{n}": {"name": f"Team {n}"} for n in range(1, 11)}
+    monkeypatch.setattr(server, "_get_oauth_session", lambda: sc)
+    monkeypatch.setattr(server, "_get_league", lambda sc, lid: lg)
+    monkeypatch.setattr(server, "_resolved_league_id", lambda lg: "1529868")
+    monkeypatch.setattr(server, "_get_scoring_config",
+                        lambda sc, lg: build_scoring_config(fx.SETTINGS_RAW_POINTS))
+    out = asyncio.run(server.yahoo_get_draft_results(server.GetDraftResultsInput(**kw)))
+    if out.startswith("Error:"):
+        return out, session.urls
+    return _json.loads(out), session.urls
+
+
+def test_draft_results_merges_players_and_analysis(monkeypatch):
+    res, urls = _run_draft(monkeypatch)
+    assert res["pick_count"] == 3
+    assert [p["pick"] for p in res["picks"]] == [1, 2, 3]
+    bijan = res["picks"][1]
+    assert bijan["team_name"] == "Team 4"
+    assert bijan["player"]["name"] == "Bijan Robinson"
+    assert bijan["player"]["pro_team"] == "Atl"
+    assert bijan["player"]["draft_analysis"]["average_pick"] == 2.1
+    # all three keys fetched in one batched /draft_analysis call
+    assert sum("/draft_analysis" in u for u in urls) == 1
+    # a player the lookup didn't return still shows its key, not a crash
+    assert res["picks"][0]["player"] == {"player_key": "470.p.40059"}
+
+
+def test_draft_results_team_filter(monkeypatch):
+    res, _ = _run_draft(monkeypatch, team_number=4)
+    assert res["team_key"] == "470.l.1529868.t.4"
+    assert [p["pick"] for p in res["picks"]] == [2]
+
+
+def test_draft_results_unknown_team_is_an_error(monkeypatch):
+    monkeypatch.setattr(server, "_resolve_team_key", lambda lg, teams, n: None)
+    res, urls = _run_draft(monkeypatch, team_number=30)
+    assert res.startswith("Error: Team number 30 not found")
+    assert urls == []  # rejected before any Yahoo call
 
 
 # --- Host validation on the built ASGI app --------------------------------

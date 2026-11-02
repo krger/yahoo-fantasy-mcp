@@ -296,6 +296,36 @@ def test_parse_scoreboard_node_points_live_shape_winner_is_higher_scorer():
     assert m["stat_lines"] == []
 
 
+def test_points_matchup_surfaces_win_probability_in_both_framings():
+    # Live NFL team nodes carry win_probability; both framings surface it.
+    m = parsers._parse_matchup_node(
+        fx.MATCHUP_NODE_POINTS_LIVE, SCORING_PTS, "470.l.1529868.t.4")
+    assert m["team"]["win_probability"] == 0
+    assert m["opponent"]["win_probability"] == 1
+    m = parsers._parse_matchup_node(fx.MATCHUP_NODE_POINTS_LIVE, SCORING_PTS)
+    probs = {t["team_key"]: t["win_probability"] for t in m["teams"]}
+    assert probs == {"470.l.1529868.t.4": 0, "470.l.1529868.t.8": 1}
+
+
+def test_win_probability_coerced_from_string():
+    import copy
+    node = copy.deepcopy(fx.TEAM_NODE_PTS_LIVE_4)
+    node[1]["win_probability"] = "0.73"
+    assert parsers._extract_team_summary(node)["win_probability"] == 0.73
+    # Yahoo's float noise is rounded away (seen live 2026-11-02).
+    node[1]["win_probability"] = 0.010000000000000009
+    assert parsers._extract_team_summary(node)["win_probability"] == 0.01
+
+
+def test_matchup_omits_win_probability_when_yahoo_sends_none():
+    # The categories (MLB) league sends none -> no key at all, not a null.
+    m = parsers._parse_matchup_node(fx.MATCHUP_NODE, SCORING, "469.l.1.t.5")
+    assert "win_probability" not in m["team"]
+    assert "win_probability" not in m["opponent"]
+    m = parsers._parse_matchup_node(fx.MATCHUP_NODE_POINTS, SCORING_PTS)
+    assert all("win_probability" not in t for t in m["teams"])
+
+
 def test_parse_matchup_points_wrapper_unwraps_team_response():
     m = parsers._parse_matchup(fx.MATCHUP_RAW_POINTS, "470.l.1.t.3", SCORING_PTS)
     assert m["scoring"] == "points" and m["result"] == "win"
@@ -422,6 +452,21 @@ def test_flatten_raw_yahoo_player_handles_no_subresources():
     assert "ownership" not in flat
 
 
+def test_flatten_raw_yahoo_player_points_league_week_points():
+    # A points league sends player_points beside player_stats; it becomes the
+    # flat ``points`` (fantasy points for the same coverage as ``stats``).
+    flat = parsers._flatten_raw_yahoo_player(fx.PLAYER_ENTRY_POINTS_WEEK, SCORING_PTS)
+    assert flat["name"] == "Joe Burrow"
+    assert flat["stats"] == {"Pass Yds": 462, "Pass TD": 5, "Int": 3}
+    assert flat["points"] == 42.48
+
+
+def test_flatten_raw_yahoo_player_categories_league_has_no_points():
+    # No player_points in a categories league -> no ``points`` key (not 0).
+    flat = parsers._flatten_raw_yahoo_player(fx.PLAYER_ENTRY, SCORING)
+    assert "points" not in flat
+
+
 def test_flatten_raw_yahoo_player_extracts_owner_team():
     # taken players (;out=ownership) carry the owning fantasy team
     flat = parsers._flatten_raw_yahoo_player(fx.PLAYER_ENTRY_OWNED, SCORING)
@@ -435,6 +480,140 @@ def test_flatten_raw_yahoo_player_extracts_owner_team():
     }
     # stats still parse alongside ownership
     assert flat["stats"] == {"SV": 14, "K": 31}
+
+
+# --- percent owned/started + bye week -------------------------------------
+
+def test_flatten_raw_yahoo_player_percent_started_deltas_and_bye():
+    flat = parsers._flatten_raw_yahoo_player(fx.PLAYER_ENTRY_TRENDING, SCORING_PTS)
+    assert flat["bye_week"] == 6
+    assert flat["percent_owned"] == 100
+    assert flat["percent_owned_delta"] == 1  # Yahoo sends it as a string
+    assert flat["percent_started"] == 91
+    assert flat["percent_started_delta"] == 18
+
+
+def test_flatten_raw_yahoo_player_partial_percent_nodes():
+    # Live: a barely-owned player can carry only a delta, and percent_started
+    # can be a bare coverage header. Surface what is there, nothing more.
+    entry = [fx.PLAYER_ENTRY_POINTS_WEEK[0],
+             {"percent_owned": [{"coverage_type": "week", "week": 8}, {"delta": "0"}]},
+             {"percent_started": [{"coverage_type": "date", "date": "2026-11-02"}]}]
+    flat = parsers._flatten_raw_yahoo_player(entry, SCORING_PTS)
+    assert "percent_owned" not in flat
+    assert flat["percent_owned_delta"] == 0
+    assert "percent_started" not in flat and "percent_started_delta" not in flat
+
+
+def test_flatten_raw_yahoo_player_dict_percent_owned_still_parses():
+    # The pre-existing dict form keeps working, now with an optional delta.
+    assert parsers._flatten_raw_yahoo_player(fx.PLAYER_ENTRY, SCORING)["percent_owned"] == 24
+    assert "percent_owned_delta" not in parsers._flatten_raw_yahoo_player(fx.PLAYER_ENTRY, SCORING)
+
+
+def test_flatten_raw_yahoo_player_baseball_has_no_bye_week():
+    assert "bye_week" not in parsers._flatten_raw_yahoo_player(fx.PLAYER_ENTRY, SCORING)
+
+
+# --- draft results + draft analysis ----------------------------------------
+
+def test_parse_draft_results_live_shape_in_pick_order():
+    picks = parsers._parse_draft_results(fx.DRAFT_RESULTS_RAW)
+    assert [p["pick"] for p in picks] == [1, 2, 3]
+    assert picks[1] == {"pick": 2, "round": 1, "team_key": "470.l.1529868.t.4",
+                        "player_key": "470.p.40055"}
+    assert all("cost" not in p for p in picks)  # not an auction draft
+
+
+def test_parse_draft_results_sorts_and_keeps_auction_cost():
+    raw = {"fantasy_content": {"league": [{}, {"draft_results": {
+        "1": {"draft_result": {"pick": "2", "round": "1", "team_key": "t.2",
+                               "player_key": "p.2", "cost": "41"}},
+        "0": {"draft_result": {"pick": "1", "round": "1", "team_key": "t.1",
+                               "player_key": "p.1", "cost": "55"}},
+        "count": 2,
+    }}]}}
+    picks = parsers._parse_draft_results(raw)
+    assert [p["pick"] for p in picks] == [1, 2]
+    assert [p["cost"] for p in picks] == [55, 41]
+
+
+def test_parse_draft_results_predraft_and_empty_shapes():
+    # Pre-draft picks can lack a player; an empty collection can be a bare [].
+    raw = {"fantasy_content": {"league": [{}, {"draft_results": {
+        "0": {"draft_result": {"pick": 1, "round": 1, "team_key": "t.1"}},
+        "count": 1,
+    }}]}}
+    assert parsers._parse_draft_results(raw)[0]["player_key"] is None
+    empty = {"fantasy_content": {"league": [{}, {"draft_results": []}]}}
+    assert parsers._parse_draft_results(empty) == []
+    assert parsers._parse_draft_results({}) == []
+
+
+def test_flatten_raw_yahoo_player_draft_analysis():
+    flat = parsers._flatten_raw_yahoo_player(fx.PLAYER_ENTRY_DRAFT_ANALYSIS, SCORING_PTS)
+    assert flat["name"] == "Bijan Robinson"
+    assert flat["draft_analysis"] == {
+        "average_pick": 2.1, "average_round": 1.0, "average_cost": 70.9,
+        "percent_drafted": 1.0, "preseason_average_pick": 2.1,
+        "preseason_average_round": 1.0, "preseason_average_cost": 70.9,
+        "preseason_percent_drafted": 1.0,
+    }
+
+
+def test_flatten_raw_yahoo_player_draft_analysis_drops_dashes():
+    entry = [fx.PLAYER_ENTRY_DRAFT_ANALYSIS[0],
+             {"draft_analysis": [{"average_pick": "-"}, {"percent_drafted": "0.00"}]}]
+    flat = parsers._flatten_raw_yahoo_player(entry, SCORING_PTS)
+    assert flat["draft_analysis"] == {"percent_drafted": 0.0}
+
+
+# --- team waiver/transaction/draft fields (lg.teams() entries) -------------
+# Shaped like the live lg.teams() entries for NFL 1529868 / MLB 60467
+# (raw-checked 2026-11-02): ints arrive as ints, roster_adds as a coverage dict.
+
+_TEAM_NFL = {
+    "team_key": "470.l.1529868.t.4", "name": "Lincolnshire Poachers",
+    "waiver_priority": 7, "number_of_moves": 9, "number_of_trades": 0,
+    "roster_adds": {"coverage_type": "week", "coverage_value": 8, "value": "2"},
+    "draft_position": 2, "draft_grade": "A+", "has_draft_grade": 1,
+}
+
+
+def test_team_activity_normalizes_live_nfl_entry():
+    assert parsers._team_activity(_TEAM_NFL) == {
+        "waiver_priority": 7, "number_of_moves": 9, "number_of_trades": 0,
+        "draft_position": 2, "draft_grade": "A+",
+        "roster_adds": {"week": 8, "count": 2},
+    }
+
+
+def test_team_activity_clinched_flag_and_string_counts():
+    t = {"waiver_priority": "5", "number_of_moves": "43", "clinched_playoffs": 1}
+    out = parsers._team_activity(t)
+    assert out["waiver_priority"] == 5 and out["number_of_moves"] == 43
+    assert out["clinched_playoffs"] is True
+    assert parsers._team_activity({"clinched_playoffs": "0"})["clinched_playoffs"] is False
+
+
+def test_team_activity_omits_fields_yahoo_did_not_send():
+    # No FAAB / auction / grade in these leagues -> keys absent, not zero.
+    out = parsers._team_activity(_TEAM_NFL)
+    for k in ("faab_balance", "auction_budget_total", "auction_budget_spent",
+              "clinched_playoffs"):
+        assert k not in out
+    assert parsers._team_activity({}) == {}
+
+
+def test_team_activity_faab_and_non_weekly_adds():
+    out = parsers._team_activity({
+        "faab_balance": "87", "auction_budget_total": "200",
+        "roster_adds": {"coverage_type": "date", "coverage_value": "2026-11-01",
+                        "value": "1"},
+    })
+    assert out["faab_balance"] == 87 and out["auction_budget_total"] == 200
+    assert out["roster_adds"] == {"coverage_type": "date",
+                                  "coverage_value": "2026-11-01", "count": 1}
 
 
 # --- team-number resolution ------------------------------------------------
