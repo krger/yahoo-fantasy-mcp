@@ -399,6 +399,34 @@ def test_season_for_tolerates_missing_or_unparsable_season(monkeypatch):
     assert server._season_for(None, "470.l.70000") is None
 
 
+# --- team listing -----------------------------------------------------------
+#
+# Yahoo wraps each manager as {"manager": {...}} inside the managers list;
+# reading the nickname off the list item itself made every team "Unknown".
+
+
+def test_team_manager_name_unwraps_yahoo_manager_node():
+    tinfo = {"managers": [{"manager": {"manager_id": "4", "nickname": "Kyle"}}]}
+    assert server._team_manager_name(tinfo) == "Kyle"
+
+
+def test_team_manager_name_takes_first_of_co_managers():
+    tinfo = {"managers": [
+        {"manager": {"nickname": "Primary"}},
+        {"manager": {"nickname": "Co"}},
+    ]}
+    assert server._team_manager_name(tinfo) == "Primary"
+
+
+def test_team_manager_name_falls_back_to_unknown():
+    assert server._team_manager_name({}) == "Unknown"
+    assert server._team_manager_name({"managers": []}) == "Unknown"
+    assert server._team_manager_name({"managers": [{"manager": {}}]}) == "Unknown"
+    # Yahoo hides some nicknames as "--hidden--"; that is still a real value.
+    hidden = {"managers": [{"manager": {"nickname": "--hidden--"}}]}
+    assert server._team_manager_name(hidden) == "--hidden--"
+
+
 # --- Host validation on the built ASGI app --------------------------------
 #
 # The transport_security wiring in build_app() is a production-only failure
