@@ -650,21 +650,45 @@ def _get_player_ownership(sc: OAuth2, league_key: str, player_id) -> dict:
         return {"ownership_error": str(e)}
 
 
+def _http_status(e: Exception) -> Optional[int]:
+    """The HTTP status carried by ``e``, if it has one (``requests.HTTPError``
+    and friends expose it as ``e.response.status_code``)."""
+    code = getattr(getattr(e, "response", None), "status_code", None)
+    return code if isinstance(code, int) else None
+
+
 def _handle_error(e: Exception) -> str:
-    """Consistent error formatting."""
+    """Consistent error formatting.
+
+    Classifies by the real HTTP status when the exception carries one, else by
+    phrases Yahoo/requests actually use. It deliberately does **not** look for
+    bare ``401``/``403``/``404`` digits in the message: our own errors embed
+    ids (a league id like ``1440123`` contains ``401``), and yfa raises a
+    ``RuntimeError`` of the response body, which carries no status code — so
+    digit matching only ever produced false positives, including telling the
+    caller to delete working credentials.
+    """
     error_type = type(e).__name__
-    if "401" in str(e) or "Unauthorized" in str(e):
+    status = _http_status(e)
+    text = str(e).lower()
+    if status == 401 or any(
+        p in text for p in ("unauthorized", "token_expired", "oauth_problem")
+    ):
         return (
             f"Error: Authentication failed ({error_type}). "
             "Your OAuth tokens may have expired. Try deleting oauth2.json "
             "and re-authenticating."
         )
-    if "403" in str(e) or "Forbidden" in str(e):
+    if status == 403 or "forbidden" in text or "not authorized" in text:
         return (
             f"Error: Access denied ({error_type}). "
             "You may not have permission to access this resource."
         )
-    if "404" in str(e) or "not found" in str(e).lower():
+    # A missing local file (e.g. oauth2.json) is a server config problem, not
+    # a bad id from the caller — let it fall through with its real message.
+    if status == 404 or (
+        "not found" in text and not isinstance(e, FileNotFoundError)
+    ):
         return f"Error: Resource not found ({error_type}). Check the ID or key."
     return f"Error: {error_type} — {e}"
 
