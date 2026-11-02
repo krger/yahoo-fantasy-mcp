@@ -1538,6 +1538,115 @@ def _txn_block(data: dict) -> dict:
     return block if isinstance(block, dict) else {}
 
 
+def _txn_parse_block(txns_block: dict) -> list[dict]:
+    """Parse a ``transactions`` collection (from ``_txn_block``) into
+    ``[{type, status, timestamp, players}]``, in Yahoo's (newest-first) order.
+    """
+    transactions = []
+    for key, txn_data in txns_block.items():
+        if key == "count":
+            continue
+        if not isinstance(txn_data, dict):
+            continue
+
+        txn_entry = txn_data.get("transaction", [])
+        if not isinstance(txn_entry, list) or len(txn_entry) < 2:
+            continue
+
+        # First element has transaction metadata.
+        # For add/drop transactions Yahoo may wrap metadata in a list
+        # of dicts instead of a single dict.
+        raw_meta = txn_entry[0]
+        if isinstance(raw_meta, dict):
+            meta = raw_meta
+        elif isinstance(raw_meta, list):
+            meta = {}
+            for m in raw_meta:
+                if isinstance(m, dict):
+                    meta.update(m)
+        else:
+            meta = {}
+        txn_type = meta.get("type", "")
+        timestamp = meta.get("timestamp", "")
+        status = meta.get("status", "")
+
+        # Second element has the players involved.
+        # For add/drop transactions Yahoo may return a list instead
+        # of a dict, so we need to search for the "players" key.
+        raw_players = txn_entry[1] if len(txn_entry) > 1 else {}
+        if isinstance(raw_players, dict):
+            players_data = raw_players.get("players", {})
+        elif isinstance(raw_players, list):
+            players_data = {}
+            for item in raw_players:
+                if isinstance(item, dict) and "players" in item:
+                    players_data = item["players"]
+                    break
+        else:
+            players_data = {}
+
+        players = []
+        if not isinstance(players_data, dict):
+            # If players_data is a list, try to find dicts with player keys
+            if isinstance(players_data, list):
+                converted = {}
+                for idx_p, pd in enumerate(players_data):
+                    if isinstance(pd, dict):
+                        converted[str(idx_p)] = pd
+                players_data = converted
+            else:
+                players_data = {}
+        for pkey, pval in players_data.items():
+            if pkey == "count":
+                continue
+            if not isinstance(pval, dict):
+                continue
+
+            player_entry = pval.get("player", [])
+            if not isinstance(player_entry, list):
+                continue
+
+            # Extract player info from the nested lists
+            player_info = {}
+            transaction_data = {}
+
+            for item in player_entry:
+                if isinstance(item, list):
+                    for sub in item:
+                        if isinstance(sub, dict):
+                            _txn_player_fields(sub, player_info)
+                elif isinstance(item, dict):
+                    _txn_player_fields(item, player_info)
+                    if "transaction_data" in item:
+                        _txn_data_fields(item, transaction_data)
+
+            players.append({**player_info, **transaction_data})
+
+        transactions.append({
+            "type": txn_type,
+            "status": status,
+            "timestamp": timestamp,
+            "players": players,
+        })
+    return transactions
+
+
+def _txn_involves(txn: dict, team_key: str) -> bool:
+    """True if any player in ``txn`` moved to or from ``team_key``."""
+    return any(
+        p.get("destination_team_key") == team_key
+        or p.get("source_team_key") == team_key
+        for p in txn.get("players", [])
+    )
+
+
+# Transactions are fetched in pages of at least this many (Yahoo honors
+# ;count= above 25 here) and filtered client-side; the page cap bounds how far
+# back a sparse filter will scan (e.g. one team's trades).
+_TXN_PAGE = 25
+_TXN_MAX_PAGES = 20
+
+
 @mcp.tool(
     name="yahoo_get_transactions",
     annotations={
@@ -1555,11 +1664,14 @@ async def yahoo_get_transactions(
 
     Returns adds, drops, add/drops, and trades across the league so you
     can see what other managers are doing.  Filter by transaction type
-    or by a specific team.
+    or by a specific team; with a filter, ``count`` is the number of
+    *matching* transactions (most recent first), not a window to filter.
 
     Args:
         params (GetTransactionsInput): Validated input containing:
-            - transaction_types (Optional[list]): Filter by add, drop, add/drop, trade.
+            - transaction_types (Optional[list]): Filter by add, drop, add/drop,
+              trade. Types match exactly — an add/drop is its own type, so
+              'add' does not include add/drops.
             - team_number (Optional[int]): Filter to a specific team (1-based).
             - count (Optional[int]): Number of results (default 25, max 50).
 
@@ -1570,39 +1682,8 @@ async def yahoo_get_transactions(
         sc = _get_oauth_session()
         lg = _get_league(sc, params.league_id)
 
-        # Build the transactions API URL
-        url = (
-            f"https://fantasysports.yahooapis.com/fantasy/v2/"
-            f"league/{lg.league_key}/transactions"
-        )
-
-        # Add type filter if specified
-        if params.transaction_types:
-            types_str = ",".join(t.value for t in params.transaction_types)
-            url += f";types={types_str}"
-
-        # Add count
-        url += f";count={params.count}"
-
-        url += "?format=json"
-
-        resp = sc.session.get(url)
-        if resp.status_code != 200:
-            return json.dumps({
-                "error": f"Yahoo API returned HTTP {resp.status_code}",
-            })
-
-        data = resp.json()
-
-        # Dump the raw response structure for debugging
-        logger.debug(
-            "Raw transactions response:\n%s",
-            json.dumps(data, indent=2, default=str)[:5000],
-        )
-
-        txns_block = _txn_block(data)
-
-        # If filtering by team, resolve team_key
+        # Resolve the team filter first: Yahoo filters by team server-side
+        # (;team_key=), so the request has to carry it.
         filter_team_key = None
         if params.team_number is not None:
             teams = lg.teams()
@@ -1615,103 +1696,60 @@ async def yahoo_get_transactions(
                     ),
                 })
 
-        # Parse each transaction
+        # Type filtering happens here, not at Yahoo. Verified live 2026-11-02:
+        # Yahoo's ;types= treats add and drop as one family (types=drop
+        # returns adds), rejects types=add/drop with HTTP 400, and is ignored
+        # altogether alongside ;team_key=. Only types=trade filters reliably,
+        # so it is sent purely to narrow a trades-only request.
+        wanted = (
+            {t.value for t in params.transaction_types}
+            if params.transaction_types else None
+        )
+        count = params.count or 25
+
+        base = (
+            f"https://fantasysports.yahooapis.com/fantasy/v2/"
+            f"league/{lg.league_key}/transactions"
+        )
+        if filter_team_key:
+            base += f";team_key={filter_team_key}"
+        if wanted == {"trade"}:
+            base += ";types=trade"
+
+        # Filtering after the fetch means one page of `count` may not hold
+        # `count` matches, so page back (newest first) until it does.
+        page_size = max(count, _TXN_PAGE)
         transactions = []
-        for key, txn_data in txns_block.items():
-            if key == "count":
-                continue
-            if not isinstance(txn_data, dict):
-                continue
+        start = 0
+        for _ in range(_TXN_MAX_PAGES):
+            resp = sc.session.get(
+                f"{base};count={page_size};start={start}?format=json"
+            )
+            if resp.status_code != 200:
+                if not transactions:
+                    return json.dumps({
+                        "error": f"Yahoo API returned HTTP {resp.status_code}",
+                    })
+                break  # keep what earlier pages already matched
 
-            txn_entry = txn_data.get("transaction", [])
-            if not isinstance(txn_entry, list) or len(txn_entry) < 2:
-                continue
-
-            # First element has transaction metadata.
-            # For add/drop transactions Yahoo may wrap metadata in a list
-            # of dicts instead of a single dict.
-            raw_meta = txn_entry[0]
-            if isinstance(raw_meta, dict):
-                meta = raw_meta
-            elif isinstance(raw_meta, list):
-                meta = {}
-                for m in raw_meta:
-                    if isinstance(m, dict):
-                        meta.update(m)
-            else:
-                meta = {}
-            txn_type = meta.get("type", "")
-            timestamp = meta.get("timestamp", "")
-            status = meta.get("status", "")
-
-            # Second element has the players involved.
-            # For add/drop transactions Yahoo may return a list instead
-            # of a dict, so we need to search for the "players" key.
-            raw_players = txn_entry[1] if len(txn_entry) > 1 else {}
-            if isinstance(raw_players, dict):
-                players_data = raw_players.get("players", {})
-            elif isinstance(raw_players, list):
-                players_data = {}
-                for item in raw_players:
-                    if isinstance(item, dict) and "players" in item:
-                        players_data = item["players"]
-                        break
-            else:
-                players_data = {}
-
-            players = []
-            if not isinstance(players_data, dict):
-                # If players_data is a list, try to find dicts with player keys
-                if isinstance(players_data, list):
-                    converted = {}
-                    for idx_p, pd in enumerate(players_data):
-                        if isinstance(pd, dict):
-                            converted[str(idx_p)] = pd
-                    players_data = converted
-                else:
-                    players_data = {}
-            for pkey, pval in players_data.items():
-                if pkey == "count":
+            data = resp.json()
+            logger.debug(
+                "Raw transactions response:\n%s",
+                json.dumps(data, indent=2, default=str)[:5000],
+            )
+            page = _txn_parse_block(_txn_block(data))
+            for txn in page:
+                if wanted is not None and txn["type"] not in wanted:
                     continue
-                if not isinstance(pval, dict):
+                # Defensive: Yahoo already filtered by team, but it silently
+                # ignores filters it dislikes, so don't trust it blindly.
+                if filter_team_key and not _txn_involves(txn, filter_team_key):
                     continue
-
-                player_entry = pval.get("player", [])
-                if not isinstance(player_entry, list):
-                    continue
-
-                # Extract player info from the nested lists
-                player_info = {}
-                transaction_data = {}
-
-                for item in player_entry:
-                    if isinstance(item, list):
-                        for sub in item:
-                            if isinstance(sub, dict):
-                                _txn_player_fields(sub, player_info)
-                    elif isinstance(item, dict):
-                        _txn_player_fields(item, player_info)
-                        if "transaction_data" in item:
-                            _txn_data_fields(item, transaction_data)
-
-                players.append({**player_info, **transaction_data})
-
-            # If filtering by team, check if this team is involved
-            if filter_team_key:
-                team_involved = any(
-                    p.get("destination_team_key") == filter_team_key
-                    or p.get("source_team_key") == filter_team_key
-                    for p in players
-                )
-                if not team_involved:
-                    continue
-
-            transactions.append({
-                "type": txn_type,
-                "status": status,
-                "timestamp": timestamp,
-                "players": players,
-            })
+                transactions.append(txn)
+            if len(transactions) >= count or len(page) < page_size:
+                break
+            start += page_size
+        transactions = transactions[:count]
 
         return json.dumps({
             "league_id": _resolved_league_id(lg),

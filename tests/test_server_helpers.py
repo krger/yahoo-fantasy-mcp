@@ -469,6 +469,121 @@ def test_txn_block_tolerates_malformed_responses():
     assert server._txn_block(_txn_response("nope")) == {}
 
 
+# --- transactions: client-side filtering + paging --------------------------
+#
+# Yahoo's own filters can't be trusted here (verified live 2026-11-02):
+# ;types= lumps add and drop together, 400s on add/drop, and is ignored next
+# to ;team_key=. So the handler filters exact types itself and pages back
+# until it has `count` matches.
+
+_LK = "470.l.1"
+
+
+def _txn(tid, ttype, team):
+    """One raw Yahoo transaction entry moving a player to/from ``team``."""
+    td = (
+        {"type": "drop", "source_team_key": f"{_LK}.t.{team}",
+         "source_team_name": f"T{team}"}
+        if ttype == "drop" else
+        {"type": "add", "destination_team_key": f"{_LK}.t.{team}",
+         "destination_team_name": f"T{team}"}
+    )
+    return {"transaction": [
+        {"transaction_id": str(tid), "type": ttype, "status": "successful",
+         "timestamp": str(1000 + tid)},
+        {"players": {"count": 1, "0": {"player": [
+            [{"name": {"full": f"P{tid}"}}],
+            {"transaction_data": [td]},
+        ]}}},
+    ]}
+
+
+def test_txn_parse_block_keeps_order_and_fields():
+    block = {"0": _txn(9, "add", 4), "1": _txn(8, "drop", 2), "count": 2}
+    out = server._txn_parse_block(block)
+    assert [t["type"] for t in out] == ["add", "drop"]
+    assert out[0]["players"][0]["destination_team_key"] == f"{_LK}.t.4"
+    assert out[1]["players"][0]["source_team_key"] == f"{_LK}.t.2"
+
+
+def test_txn_involves_matches_source_or_destination():
+    add, drop = server._txn_parse_block({"0": _txn(1, "add", 4), "1": _txn(2, "drop", 4)})
+    assert server._txn_involves(add, f"{_LK}.t.4")
+    assert server._txn_involves(drop, f"{_LK}.t.4")
+    assert not server._txn_involves(add, f"{_LK}.t.5")
+
+
+class _PagedSession:
+    """Serves a newest-first transaction list in pages, honoring ;count= and
+    ;start= like Yahoo, and records each URL requested."""
+
+    def __init__(self, txns):
+        self.txns, self.urls = txns, []
+
+    def get(self, url):
+        import re
+        self.urls.append(url)
+        count = int(re.search(r";count=(\d+)", url).group(1))
+        start = int(re.search(r";start=(\d+)", url).group(1))
+        page = self.txns[start:start + count]
+        block = {str(i): t for i, t in enumerate(page)}
+        block["count"] = len(page)
+        body = _txn_response({"transactions": block if page else []})
+        return type("_Resp", (), {"status_code": 200, "json": lambda self: body})()
+
+
+def _run_transactions(monkeypatch, txns, **kw):
+    import json as _json
+    session = _PagedSession(txns)
+    sc = type("_SC", (), {"session": session})()
+    lg = type("_LG", (), {"league_key": _LK})()
+    lg.teams = lambda: {f"{_LK}.t.{n}": {} for n in range(1, 11)}
+    monkeypatch.setattr(server, "_get_oauth_session", lambda: sc)
+    monkeypatch.setattr(server, "_get_league", lambda sc, lid: lg)
+    out = asyncio.run(server.yahoo_get_transactions(
+        server.GetTransactionsInput(**kw)
+    ))
+    return _json.loads(out), session.urls
+
+
+def test_transactions_type_filter_is_exact_and_pages_back(monkeypatch):
+    # 60 add/drop-family moves; the only pure drops are deep in the history.
+    txns = [_txn(100 - i, "add", 3) for i in range(60)]
+    txns[45] = _txn(55, "drop", 3)
+    txns[52] = _txn(48, "drop", 3)
+    res, urls = _run_transactions(
+        monkeypatch, txns, transaction_types=["drop"], count=2
+    )
+    assert [t["type"] for t in res["transactions"]] == ["drop", "drop"]
+    assert len(urls) == 3  # paged 0, 25, 50 to find both
+    assert all(";types=" not in u for u in urls)  # Yahoo's types filter unused
+
+
+def test_transactions_add_does_not_include_add_drop(monkeypatch):
+    txns = [_txn(3, "add/drop", 1), _txn(2, "add", 1), _txn(1, "add/drop", 1)]
+    res, _ = _run_transactions(monkeypatch, txns, transaction_types=["add"])
+    assert [t["type"] for t in res["transactions"]] == ["add"]
+
+
+def test_transactions_team_filter_is_sent_to_yahoo(monkeypatch):
+    txns = [_txn(i, "add", 4) for i in range(5)]
+    res, urls = _run_transactions(monkeypatch, txns, team_number=4, count=3)
+    assert res["count"] == 3
+    assert f";team_key={_LK}.t.4" in urls[0]
+
+
+def test_transactions_trade_only_narrows_server_side(monkeypatch):
+    _, urls = _run_transactions(monkeypatch, [], transaction_types=["trade"])
+    assert ";types=trade" in urls[0]
+
+
+def test_transactions_null_count_defaults(monkeypatch):
+    txns = [_txn(i, "add", 1) for i in range(30)]
+    res, urls = _run_transactions(monkeypatch, txns, count=None)
+    assert res["count"] == 25
+    assert ";count=None" not in urls[0]
+
+
 # --- per-league season resolution -----------------------------------------
 #
 # The season a stat sort should target belongs to the league, not the wall
