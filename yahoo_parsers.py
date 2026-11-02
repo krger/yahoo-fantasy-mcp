@@ -115,6 +115,13 @@ def _to_int(value):
     return value
 
 
+def _is_set(flag) -> bool:
+    """Read a Yahoo 0/1 flag (``is_tied`` etc.), which arrives as an int, a
+    string, or occasionally a bool. Only a set flag is true — notably the
+    string ``"0"``, which plain truthiness would read as set."""
+    return flag is True or str(flag) == "1"
+
+
 def _to_number(value):
     """Coerce a Yahoo stringified number (int or float, e.g. ``".583"``) to a
     number, leaving non-numeric values as-is."""
@@ -303,7 +310,7 @@ def _parse_matchup_node(
     for entry in matchup.get("stat_winners", []):
         sw = entry.get("stat_winner", {})
         sid = str(sw.get("stat_id"))
-        winners[sid] = "tie" if sw.get("is_tied") else sw.get("winner_team_key")
+        winners[sid] = "tie" if _is_set(sw.get("is_tied")) else sw.get("winner_team_key")
 
     def _team_info(s):
         return {
@@ -379,7 +386,7 @@ def _points_matchup_node(
     neutral ``teams`` list for the scoreboard.
     """
     winner_key = matchup.get("winner_team_key")
-    is_tied = str(matchup.get("is_tied")) == "1"
+    is_tied = _is_set(matchup.get("is_tied"))
 
     def _team_info(s):
         return {

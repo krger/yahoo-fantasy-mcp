@@ -138,6 +138,30 @@ def test_parse_matchup_node_perspective_flips_for_opponent():
     assert by_stat["RBI"]["result"] == "tie"
 
 
+def test_parse_matchup_node_category_tie_flag_reads_zero_as_not_tied():
+    # A category carrying is_tied "0" (or 0) alongside a winner is a win/loss,
+    # not a tie — plain truthiness used to read the string "0" as tied.
+    node = {**fx.MATCHUP_NODE, "stat_winners": [
+        {"stat_winner": {"stat_id": "7", "winner_team_key": "469.l.1.t.5", "is_tied": "0"}},
+        {"stat_winner": {"stat_id": "12", "winner_team_key": "469.l.1.t.7", "is_tied": 0}},
+        {"stat_winner": {"stat_id": "13", "is_tied": "1"}},
+    ]}
+    by_stat = {
+        c["stat"]: c["result"]
+        for c in parsers._parse_matchup_node(node, SCORING, "469.l.1.t.5")["categories"]
+    }
+    assert by_stat["R"] == "win"
+    assert by_stat["HR"] == "loss"
+    assert by_stat["RBI"] == "tie"
+
+
+def test_is_set_reads_yahoo_flags():
+    for v in (1, "1", True):
+        assert parsers._is_set(v)
+    for v in (0, "0", False, None, "", "true"):
+        assert not parsers._is_set(v)
+
+
 def test_parse_matchup_node_raises_when_team_absent():
     try:
         parsers._parse_matchup_node(fx.MATCHUP_NODE, SCORING, "469.l.1.t.99")
