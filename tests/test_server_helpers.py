@@ -159,6 +159,39 @@ def test_resolve_sort_baseball_table_wins_over_league_fallback():
     assert server._resolve_sort("K", mlb) == ("21", True)
 
 
+# --- player-key resolution -------------------------------------------------
+
+
+class _NoSearchLeague:
+    """A league whose name search must not be reached for a key."""
+
+    league_key = "470.l.1529868"
+
+    def player_details(self, name):
+        raise AssertionError(f"searched by name for {name!r}")
+
+
+@pytest.mark.parametrize("key", [
+    "470.p.30123",   # numeric game key -- the form Yahoo itself returns
+    "nfl.p.30123",   # game-code form
+    "mlb.p.8967",
+    " 470.p.30123 ",
+])
+def test_resolve_player_key_passes_keys_through(key):
+    assert server._resolve_player_key(_NoSearchLeague(), key) == key.strip()
+
+
+def test_resolve_player_key_searches_names():
+    class _Lg:
+        league_key = "470.l.1529868"
+
+        def player_details(self, name):
+            return [{"player_id": "30123"}] if name == "Mahomes" else []
+
+    assert server._resolve_player_key(_Lg(), "Mahomes") == "470.p.30123"
+    assert server._resolve_player_key(_Lg(), "470.p.notanid") is None
+
+
 # --- player formatting (sport-neutral pro_team output) --------------------
 
 def test_format_player_emits_pro_team_not_sport_specific_key():
