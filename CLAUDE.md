@@ -187,6 +187,10 @@ player dicts). This replaced the baseball-specific `mlb_team` and the raw
 `editorial_team_abbr` output key in **v2.0** (a breaking change). The parser
 boundary (`_flatten_raw_yahoo_player`) still reads Yahoo's actual
 `editorial_team_abbr` field — the neutralization happens at output only.
+`_format_player` also flattens Yahoo's raw meta shapes, so `name` is always
+the full-name **string** and `eligible_positions` a list of position
+**strings** — the player-lookup tools (`player_stats`, `player_ownership`,
+`players_batch`) used to leak `{"full": ...}` and `[{"position": ...}]`.
 
 - `yahoo_list_my_leagues` — the leagues the authenticated account belongs to (`league_id`, `name`, `season`, `is_default`), plus `default_league_id`. Use it to discover the ids accepted by the other tools' `league_id` parameter.
 - `yahoo_list_teams` — list all teams (numbers, keys, managers)

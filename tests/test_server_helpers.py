@@ -177,6 +177,33 @@ def test_format_player_emits_pro_team_not_sport_specific_key():
     assert "mlb_team" not in out
 
 
+def test_format_player_flattens_raw_yahoo_player_meta():
+    # lg.player_details() / the batch endpoint hand over Yahoo's raw meta:
+    # name as a dict and positions as [{"position": ...}]. The player-lookup
+    # tools used to emit those verbatim, unlike every other tool.
+    out = server._format_player({
+        "name": {"full": "Patrick Mahomes", "first": "Patrick", "last": "Mahomes"},
+        "editorial_team_abbr": "KC",
+        "player_id": "30123",
+        "eligible_positions": [{"position": "QB"}, {"position": "SUPERFLEX"}],
+    })
+    assert out["name"] == "Patrick Mahomes"
+    assert out["eligible_positions"] == ["QB", "SUPERFLEX"]
+
+
+def test_format_player_keeps_already_flat_shape():
+    # roster/free-agent input is already flat and must pass through unchanged.
+    out = server._format_player({
+        "name": "Aaron Judge", "eligible_positions": ["OF", "Util"],
+    })
+    assert out["name"] == "Aaron Judge"
+    assert out["eligible_positions"] == ["OF", "Util"]
+
+
+def test_format_player_name_dict_without_full_falls_back():
+    assert server._format_player({"name": {}})["name"] == "Unknown"
+
+
 # --- error formatting ------------------------------------------------------
 
 def test_handle_error_classifies_auth():

@@ -320,9 +320,23 @@ def _format_player(player: dict) -> dict:
     # yahoo_fantasy_api returns nested dicts; flatten the useful bits
     info = {}
     if isinstance(player, dict):
-        info["name"] = player.get("name", "Unknown")
+        # Yahoo's raw player meta (lg.player_details(), the batch endpoint)
+        # gives name as {"full", "first", "last", ...} and eligible_positions
+        # as [{"position": "QB"}]; roster/free-agent paths already flatten
+        # both. Normalize here so every tool emits the same player shape.
+        name = player.get("name", "Unknown")
+        if isinstance(name, dict):
+            name = name.get("full") or "Unknown"
+        info["name"] = name
         info["position_type"] = player.get("position_type", "")
-        info["eligible_positions"] = player.get("eligible_positions", [])
+        eps = player.get("eligible_positions", [])
+        if isinstance(eps, list):
+            eps = [
+                ep.get("position", "") if isinstance(ep, dict) else ep
+                for ep in eps
+            ]
+            eps = [ep for ep in eps if ep]
+        info["eligible_positions"] = eps
         info["selected_position"] = player.get("selected_position", "")
         info["status"] = player.get("status", "")
         info["status_full"] = player.get("status_full", "")
