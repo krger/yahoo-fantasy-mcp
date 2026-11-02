@@ -1022,6 +1022,39 @@ def test_team_schedule_unknown_team_is_an_error(monkeypatch):
     assert res.startswith("Error: Team number 30 not found") and urls == []
 
 
+def test_players_batch_is_league_scoped_and_surfaces_flags(monkeypatch):
+    # is_undroppable is league-specific: the bare players;player_keys=
+    # endpoint says "0" for a player the league marks undroppable, so the
+    # batch must ask in the league's context and read league[1].players.
+    import json as _json
+
+    from tests import fixtures as fx
+
+    urls = []
+    entry = fx.PLAYER_ENTRY_UNDROPPABLE + [{"player_stats": {"stats": []}}]
+    body = _players_response([entry])
+
+    class _S:
+        def get(self, url):
+            urls.append(url)
+            r = type("_Resp", (), {"status_code": 200, "text": "x",
+                                   "json": lambda self: body})()
+            r.raise_for_status = lambda: None
+            return r
+
+    sc = type("_SC", (), {"session": _S()})()
+    lg = type("_LG", (), {"league_key": _LK})()
+    monkeypatch.setattr(server, "_get_oauth_session", lambda: sc)
+    monkeypatch.setattr(server, "_get_league", lambda sc, lid: lg)
+    monkeypatch.setattr(server, "_resolve_player_key", lambda lg, n: "470.p.30977")
+    out = _json.loads(asyncio.run(server.yahoo_get_players_batch(
+        server.GetPlayersBatchInput(player_names=["Josh Allen"]))))
+    assert urls[0].startswith(
+        f"https://fantasysports.yahooapis.com/fantasy/v2/league/{_LK}/players;")
+    assert out["players"][0]["name"] == "Josh Allen"
+    assert out["players"][0]["is_undroppable"] is True
+
+
 def test_format_player_surfaces_flags_from_raw_meta():
     # Player-lookup paths hand _format_player raw meta.
     out = server._format_player({
