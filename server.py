@@ -385,6 +385,11 @@ def _format_player(player: dict) -> dict:
     stats = player.get("stats") if isinstance(player, dict) else None
     if stats:
         out["stats"] = stats
+    # Fantasy-points total for the same coverage as ``stats`` — points
+    # leagues only (Yahoo sends no player_points in a categories league).
+    points = player.get("points") if isinstance(player, dict) else None
+    if points is not None:
+        out["points"] = points
     # Owner team is present only for taken players (fetched with ;out=ownership).
     ownership = player.get("ownership") if isinstance(player, dict) else None
     if ownership:
@@ -568,23 +573,44 @@ def _fetch_free_agents_raw(
 
 
 def _fetch_player_stats_by_keys(
-    sc: OAuth2, league_key: str, player_keys: list[str], scoring: ScoringConfig
+    sc: OAuth2,
+    league_key: str,
+    player_keys: list[str],
+    scoring: ScoringConfig,
+    *,
+    week: Optional[int] = None,
+    day: Optional[date] = None,
 ) -> dict[str, dict]:
-    """Fetch season category stats for specific players, keyed by player_id.
+    """Fetch stats for specific players, keyed by player_id.
 
     Uses the league players collection with an explicit ``player_keys`` filter
-    and ``;out=stats`` — the same response shape ``_flatten_raw_yahoo_player``
-    already parses for free agents. Chunked to Yahoo's 25-per-request cap.
-    Returns ``{player_id: stats_map}`` for players that had stats.
+    — the same response shape ``_flatten_raw_yahoo_player`` already parses for
+    free agents. Chunked to Yahoo's 25-per-request cap. Returns
+    ``{player_id: flat_player}`` (the flattened dict, carrying ``stats`` and,
+    in a points league, ``points``) for players that had stats.
+
+    The coverage is the season (``;out=stats``) by default, one scoring
+    ``week`` (``/stats;type=week;week=N``), or one ``day``
+    (``/stats;type=date;date=YYYY-MM-DD``). Yahoo serves weekly player stats
+    for football but **silently returns none for baseball** (raw-checked
+    2026-11-02), which serves daily stats instead — so callers must treat an
+    empty result as "not offered for this sport", not an error.
     """
+    if week is not None:
+        coverage = f"/stats;type=week;week={int(week)}"
+    elif day is not None:
+        coverage = f"/stats;type=date;date={day.isoformat()}"
+    else:
+        coverage = ";out=stats"
     out: dict[str, dict] = {}
     PAGE = 25
     for i in range(0, len(player_keys), PAGE):
         chunk = player_keys[i:i + PAGE]
         keys_csv = quote(",".join(chunk), safe=",")
+        resource = f"players;player_keys={keys_csv}{coverage}"
         url = (
             f"https://fantasysports.yahooapis.com/fantasy/v2/"
-            f"league/{league_key}/players;player_keys={keys_csv};out=stats?format=json"
+            f"league/{league_key}/{resource}?format=json"
         )
         resp = sc.session.get(url)
         if resp.status_code != 200:
@@ -604,7 +630,7 @@ def _fetch_player_stats_by_keys(
             flat = _flatten_raw_yahoo_player(entry["player"], scoring)
             pid = flat.get("player_id")
             if pid is not None and flat.get("stats"):
-                out[str(pid)] = flat["stats"]
+                out[str(pid)] = flat
     return out
 
 
@@ -832,6 +858,17 @@ async def yahoo_get_roster(params: GetRosterInput = GetRosterInput()) -> str:
     as set for a specific date (past or future), or 'week' for a scoring
     week. If both are given, 'day' wins.
 
+    With include_stats=true each player also gets 'stats' (season totals)
+    plus the period the roster covers: 'day_stats' when 'day' is given, else
+    'week_stats' for the scoring week ('week', or the current week), named
+    in the response's 'stats_week'. Yahoo serves weekly player stats for
+    football but not baseball, so a baseball roster gets no 'week_stats' —
+    pass 'day' there for a per-day stat line. In a points league (typical
+    football) players also carry 'points' (season fantasy points) and
+    'week_points' (fantasy points for stats_week; starters' week_points sum
+    to the matchup total). Categories leagues have no fantasy points, so
+    the *_points keys are absent there.
+
     Args:
         params (GetRosterInput): Validated input parameters containing:
             - team_number (Optional[int]): Team number (1-based), or None for own team.
@@ -877,8 +914,11 @@ async def yahoo_get_roster(params: GetRosterInput = GetRosterInput()) -> str:
         team_name = teams[team_key].get("name", f"Team {params.team_number or '?'}")
         formatted = [_format_player(p) for p in roster]
 
-        # Optionally enrich each player with season category totals (one
-        # batched call), merged in by player_id.
+        # Optionally enrich each player with season totals plus the period
+        # the roster was asked for — that 'day', else the scoring week ('week'
+        # or the current one) — one batched call each, merged by player_id.
+        # In a points league each carries a fantasy-points total too.
+        stats_week = None
         if params.include_stats and formatted:
             game_id = lg.league_key.split(".")[0]
             pkeys = [
@@ -886,13 +926,38 @@ async def yahoo_get_roster(params: GetRosterInput = GetRosterInput()) -> str:
                 for p in formatted
                 if p.get("player_id")
             ]
-            stats_by_id = _fetch_player_stats_by_keys(
-                sc, lg.league_key, pkeys, _get_scoring_config(sc, lg)
-            )
+            scoring = _get_scoring_config(sc, lg)
+            season_by_id = _fetch_player_stats_by_keys(sc, lg.league_key, pkeys, scoring)
+            period_by_id: dict[str, dict] = {}
+            if day_obj is not None:
+                period_by_id = _fetch_player_stats_by_keys(
+                    sc, lg.league_key, pkeys, scoring, day=day_obj
+                )
+                period = "day"
+            else:
+                period = "week"
+                stats_week = params.week
+                if stats_week is None:
+                    try:
+                        stats_week = int(lg.current_week())
+                    except Exception as e:
+                        logger.warning(f"current_week lookup failed: {e}")
+                if stats_week is not None:
+                    period_by_id = _fetch_player_stats_by_keys(
+                        sc, lg.league_key, pkeys, scoring, week=stats_week
+                    )
+                    if not period_by_id:
+                        # Yahoo offers no weekly player stats for this sport
+                        # (baseball); don't advertise a week nothing covers.
+                        stats_week = None
             for p in formatted:
-                stats = stats_by_id.get(str(p.get("player_id", "")))
-                if stats:
-                    p["stats"] = stats
+                pid = str(p.get("player_id", ""))
+                for prefix, src in (("", season_by_id), (f"{period}_", period_by_id)):
+                    flat = src.get(pid, {})
+                    if flat.get("stats"):
+                        p[f"{prefix}stats"] = flat["stats"]
+                    if flat.get("points") is not None:
+                        p[f"{prefix}points"] = flat["points"]
 
         result = {
             "team_name": team_name,
@@ -901,8 +966,11 @@ async def yahoo_get_roster(params: GetRosterInput = GetRosterInput()) -> str:
             "day": params.day,
             "scope": "day" if params.day else ("week" if params.week else "current"),
             "roster_count": len(formatted),
-            "players": formatted,
         }
+        if stats_week is not None:
+            # The scoring week that week_stats / week_points cover.
+            result["stats_week"] = stats_week
+        result["players"] = formatted
         return json.dumps(result, indent=2, default=str)
 
     except Exception as e:

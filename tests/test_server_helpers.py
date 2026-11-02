@@ -772,6 +772,116 @@ def test_team_manager_name_falls_back_to_unknown():
     assert server._team_manager_name(hidden) == "--hidden--"
 
 
+# --- roster stats enrichment ------------------------------------------------
+#
+# include_stats fetches season totals (;out=stats) and, unless a single 'day'
+# was asked for, the scoring week's stats (/stats;type=week;week=N). In a
+# points league both carry player_points, surfaced as points / week_points.
+
+
+def _players_response(entries):
+    block = {str(i): {"player": e} for i, e in enumerate(entries)}
+    block["count"] = len(entries)
+    return {"fantasy_content": {"league": [{"league_key": _LK}, {"players": block}]}}
+
+
+def _with_points(entry, total, stats=None):
+    import copy
+    e = copy.deepcopy(entry)
+    e[1]["player_points"]["total"] = total
+    if stats is not None:
+        e[1]["player_stats"]["stats"] = stats
+    return e
+
+
+class _StatsSession:
+    """Serves season vs per-period (week/date) player stats by URL shape and
+    records each URL requested."""
+
+    def __init__(self, season, period):
+        self.season, self.period, self.urls = season, period, []
+
+    def get(self, url):
+        self.urls.append(url)
+        body = self.period if "/stats;type=" in url else self.season
+        return type("_Resp", (), {"status_code": 200, "json": lambda self: body})()
+
+
+def _run_roster(monkeypatch, *, period_empty=False, **kw):
+    import json as _json
+
+    from tests import fixtures as fx
+    from yahoo_parsers import build_scoring_config
+
+    season = _players_response([_with_points(
+        fx.PLAYER_ENTRY_POINTS_WEEK, "175.60",
+        [{"stat": {"stat_id": "4", "value": "2101"}}],
+    )])
+    # Baseball's weekly response: the player comes back with meta only.
+    period = (_players_response([[fx.PLAYER_ENTRY_POINTS_WEEK[0]]])
+              if period_empty else _players_response([fx.PLAYER_ENTRY_POINTS_WEEK]))
+    session = _StatsSession(season, period)
+    sc = type("_SC", (), {"session": session})()
+    tk = f"{_LK}.t.4"
+    team = type("_TM", (), {})()
+    team.roster = lambda **kw: [{"player_id": "32671", "name": "Joe Burrow"}]
+    lg = type("_LG", (), {"league_key": _LK})()
+    lg.teams = lambda: {tk: {"name": "Poachers", "is_owned_by_current_login": 1}}
+    lg.to_team = lambda key: team
+    lg.current_week = lambda: 8
+    monkeypatch.setattr(server, "_get_oauth_session", lambda: sc)
+    monkeypatch.setattr(server, "_get_league", lambda sc, lid: lg)
+    monkeypatch.setattr(server, "_get_scoring_config",
+                        lambda sc, lg: build_scoring_config(fx.SETTINGS_RAW_POINTS))
+    out = asyncio.run(server.yahoo_get_roster(server.GetRosterInput(**kw)))
+    return _json.loads(out), session.urls
+
+
+def test_roster_include_stats_adds_season_and_current_week_points(monkeypatch):
+    res, urls = _run_roster(monkeypatch, include_stats=True)
+    p = res["players"][0]
+    assert p["stats"] == {"Pass Yds": 2101}
+    assert p["points"] == 175.6
+    assert p["week_stats"] == {"Pass Yds": 462, "Pass TD": 5, "Int": 3}
+    assert p["week_points"] == 42.48
+    assert res["stats_week"] == 8  # resolved to the current week
+    assert any("/stats;type=week;week=8" in u for u in urls)
+
+
+def test_roster_include_stats_uses_requested_week(monkeypatch):
+    res, urls = _run_roster(monkeypatch, include_stats=True, week=3)
+    assert res["stats_week"] == 3
+    assert any("/stats;type=week;week=3" in u for u in urls)
+
+
+def test_roster_include_stats_with_day_fetches_that_day(monkeypatch):
+    res, urls = _run_roster(monkeypatch, include_stats=True, day="2026-11-01")
+    p = res["players"][0]
+    assert p["points"] == 175.6
+    assert p["day_stats"] == {"Pass Yds": 462, "Pass TD": 5, "Int": 3}
+    assert "week_stats" not in p and "week_points" not in p
+    assert "stats_week" not in res
+    assert any("/stats;type=date;date=2026-11-01" in u for u in urls)
+    assert not any("type=week" in u for u in urls)
+
+
+def test_roster_weekly_stats_absent_when_sport_serves_none(monkeypatch):
+    # Baseball: Yahoo answers type=week with meta-only players. The roster
+    # still returns season stats and simply omits the weekly fields.
+    res, _ = _run_roster(monkeypatch, include_stats=True, period_empty=True)
+    p = res["players"][0]
+    assert p["stats"] == {"Pass Yds": 2101}
+    assert "week_stats" not in p and "week_points" not in p
+    assert "stats_week" not in res
+
+
+def test_roster_without_include_stats_makes_no_stats_calls(monkeypatch):
+    res, urls = _run_roster(monkeypatch)
+    assert urls == []
+    assert "points" not in res["players"][0]
+    assert "stats_week" not in res
+
+
 # --- Host validation on the built ASGI app --------------------------------
 #
 # The transport_security wiring in build_app() is a production-only failure

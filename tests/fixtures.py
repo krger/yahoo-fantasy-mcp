@@ -386,6 +386,37 @@ PLAYER_ENTRY_OWNED = [
 ]
 
 
+# A points-league (NFL) player from players;player_keys=…/stats;type=week;week=8,
+# shaped like the live response for league 1529868 (raw-checked 2026-11-02):
+# player_points sits beside player_stats with the same coverage. Values are
+# Joe Burrow's real week-8 line. A categories league sends no player_points.
+PLAYER_ENTRY_POINTS_WEEK = [
+    [
+        {"player_key": "470.p.32671"},
+        {"player_id": "32671"},
+        {"name": {"full": "Joe Burrow", "first": "Joe", "last": "Burrow"}},
+        {"editorial_team_abbr": "Cin"},
+        {"display_position": "QB"},
+        {"position_type": "O"},
+        {"eligible_positions": [{"position": "QB"}]},
+    ],
+    {
+        "player_stats": {
+            "0": {"coverage_type": "week", "week": "8"},
+            "stats": [
+                {"stat": {"stat_id": "4", "value": "462"}},  # Pass Yds
+                {"stat": {"stat_id": "5", "value": "5"}},    # Pass TD
+                {"stat": {"stat_id": "6", "value": "3"}},    # Int
+            ],
+        },
+        "player_points": {
+            "0": {"coverage_type": "week", "week": "8"},
+            "total": "42.48",
+        },
+    },
+]
+
+
 # --- raw league/{key}/settings response (for build_scoring_config) ----------
 # stat_categories.stats lists each category with display_name, sort_order
 # ("1" high-first, "0" low-first), and is_only_display_stat ("1" for

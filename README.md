@@ -10,14 +10,13 @@ A read-only MCP server that gives Claude access to your Yahoo Fantasy Sports lea
 
 | Tool | Description |
 |------|-------------|
-| `yahoo_get_roster` | View any team's roster (yours or opponent's) |
 | `yahoo_get_standings` | Current league standings |
 | `yahoo_get_scoreboard` | All matchups for a given week |
 | `yahoo_search_free_agents` | Search available players by position/stat, with recent-form windows (last week / two weeks / month) |
 | `yahoo_get_player_stats` | Look up a specific player's stats |
 | `yahoo_get_league_settings` | League rules, scoring categories, deadlines |
 | `yahoo_get_matchup` | Detailed H2H matchup breakdown |
-| `yahoo_get_roster` | A team's roster, optionally enriched with each player's season stats |
+| `yahoo_get_roster` | Any team's roster (yours or an opponent's), optionally enriched with season and weekly stats — and per-player fantasy points in a points league |
 | `yahoo_list_teams` | List all teams (useful for finding team numbers) |
 | `yahoo_list_my_leagues` | List the leagues your Yahoo account is in (for the `league_id` override) |
 

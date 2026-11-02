@@ -115,8 +115,12 @@ class GetRosterInput(LeagueScopedInput):
         default=False,
         description=(
             "When true, enrich each rostered player with their season totals "
-            "for the league's scoring categories (one extra batched call). "
-            "Default false keeps the roster lightweight."
+            "('stats') plus the roster's period: 'day_stats' when 'day' is "
+            "given, else 'week_stats' for 'week' or the current week "
+            "(football only — Yahoo serves no weekly player stats for "
+            "baseball). In a points league players also get season and "
+            "weekly fantasy points ('points', 'week_points'). Two extra "
+            "batched calls. Default false keeps the roster lightweight."
         ),
     )
 

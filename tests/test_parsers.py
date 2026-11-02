@@ -422,6 +422,21 @@ def test_flatten_raw_yahoo_player_handles_no_subresources():
     assert "ownership" not in flat
 
 
+def test_flatten_raw_yahoo_player_points_league_week_points():
+    # A points league sends player_points beside player_stats; it becomes the
+    # flat ``points`` (fantasy points for the same coverage as ``stats``).
+    flat = parsers._flatten_raw_yahoo_player(fx.PLAYER_ENTRY_POINTS_WEEK, SCORING_PTS)
+    assert flat["name"] == "Joe Burrow"
+    assert flat["stats"] == {"Pass Yds": 462, "Pass TD": 5, "Int": 3}
+    assert flat["points"] == 42.48
+
+
+def test_flatten_raw_yahoo_player_categories_league_has_no_points():
+    # No player_points in a categories league -> no ``points`` key (not 0).
+    flat = parsers._flatten_raw_yahoo_player(fx.PLAYER_ENTRY, SCORING)
+    assert "points" not in flat
+
+
 def test_flatten_raw_yahoo_player_extracts_owner_team():
     # taken players (;out=ownership) carry the owning fantasy team
     flat = parsers._flatten_raw_yahoo_player(fx.PLAYER_ENTRY_OWNED, SCORING)
