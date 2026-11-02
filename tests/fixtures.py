@@ -511,6 +511,21 @@ DRAFT_RESULTS_RAW = {"fantasy_content": {"league": [
     }},
 ]}}
 
+# Roster-rule flags in live player meta (NFL 1529868, 2026-11-02): every
+# player carries is_undroppable ("0"/"1") and is_keeper (all false outside
+# keeper leagues). Josh Allen is one of the league's 20 undroppable players.
+PLAYER_ENTRY_UNDROPPABLE = [[
+    {"player_key": "470.p.30977"},
+    {"player_id": "30977"},
+    {"name": {"full": "Josh Allen", "first": "Josh", "last": "Allen"}},
+    {"is_keeper": {"status": False, "cost": False, "kept": False}},
+    {"editorial_team_abbr": "Buf"},
+    {"is_undroppable": "1"},
+    {"position_type": "O"},
+    {"eligible_positions": [{"position": "QB"}]},
+]]
+
+
 # A player from players;player_keys=…/draft_analysis: meta plus the
 # draft_analysis list of single-key dicts (Bijan Robinson's real figures).
 PLAYER_ENTRY_DRAFT_ANALYSIS = [

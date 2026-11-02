@@ -75,6 +75,7 @@ from yahoo_parsers import (
     _parse_standings,
     _parse_team_schedule,
     _parse_team_season_stats,
+    _player_flags,
     _rank_season_categories,
     _resolve_team_key,
     _team_activity,
@@ -407,6 +408,9 @@ def _format_player(player: dict) -> dict:
     points = player.get("points") if isinstance(player, dict) else None
     if points is not None:
         out["points"] = points
+    # Roster-rule flags, present only when set (absent = false).
+    if isinstance(player, dict):
+        out.update(_player_flags(player))
     # Owner team is present only for taken players (fetched with ;out=ownership).
     ownership = player.get("ownership") if isinstance(player, dict) else None
     if ownership:
@@ -904,7 +908,8 @@ async def yahoo_get_roster(params: GetRosterInput = GetRosterInput()) -> str:
     to the matchup total). Categories leagues have no fantasy points, so
     the *_points keys are absent there. include_stats also adds
     'bye_week' (football), 'percent_owned' / 'percent_started' and their
-    '_delta' changes.
+    '_delta' changes, and — only when set — 'is_undroppable': true and
+    'keeper' ({status, kept, cost}).
 
     Args:
         params (GetRosterInput): Validated input parameters containing:
@@ -991,7 +996,8 @@ async def yahoo_get_roster(params: GetRosterInput = GetRosterInput()) -> str:
                 pid = str(p.get("player_id", ""))
                 season = season_by_id.get(pid, {})
                 for key in ("bye_week", "percent_owned", "percent_owned_delta",
-                            "percent_started", "percent_started_delta"):
+                            "percent_started", "percent_started_delta",
+                            "is_undroppable", "keeper"):
                     if season.get(key) is not None:
                         p[key] = season[key]
                 for prefix, src in (("", season_by_id), (f"{period}_", period_by_id)):
@@ -1150,7 +1156,10 @@ async def yahoo_search_free_agents(
     yards and TDs). Also, when Yahoo sends them: 'percent_owned_delta' (change
     since the previous period — a rising number flags a trending pickup),
     'percent_started' and 'percent_started_delta', 'bye_week' (football),
-    and 'points' (season fantasy points, points leagues only).
+    and 'points' (season fantasy points, points leagues only). Roster-rule
+    flags appear only when set: 'is_undroppable': true (the league forbids
+    dropping the player) and 'keeper' ({status, kept, cost}) in keeper
+    leagues — absent means false.
 
     Args:
         params (SearchFreeAgentsInput): Validated input containing:

@@ -564,6 +564,34 @@ def test_overall_result_reads_winner_tie_and_undecided():
     assert parsers._overall_result({"is_tied": "0"}, "a", "b") is None
 
 
+# --- roster-rule player flags ----------------------------------------------
+
+def test_flatten_raw_yahoo_player_undroppable_flag():
+    flat = parsers._flatten_raw_yahoo_player(fx.PLAYER_ENTRY_UNDROPPABLE, SCORING_PTS)
+    assert flat["name"] == "Josh Allen"
+    assert flat["is_undroppable"] is True
+    assert "keeper" not in flat  # all-false is_keeper -> absent
+
+
+def test_player_flags_absent_when_unset():
+    # Every live player carries is_undroppable "0" + an all-false is_keeper.
+    assert parsers._player_flags({
+        "is_undroppable": "0",
+        "is_keeper": {"status": False, "cost": False, "kept": False},
+    }) == {}
+    assert parsers._player_flags({}) == {}
+
+
+def test_player_flags_keeper_normalized():
+    out = parsers._player_flags({"is_keeper": {"status": True, "cost": "5", "kept": False}})
+    assert out == {"keeper": {"status": True, "kept": False, "cost": 5}}
+    # String "0" flags must not read as set.
+    assert parsers._player_flags({"is_keeper": {"status": "0", "kept": "0"}}) == {}
+    # The flattened form round-trips (what _format_player sees).
+    assert parsers._player_flags(out) == out
+    assert parsers._player_flags({"is_undroppable": True}) == {"is_undroppable": True}
+
+
 # --- draft results + draft analysis ----------------------------------------
 
 def test_parse_draft_results_live_shape_in_pick_order():

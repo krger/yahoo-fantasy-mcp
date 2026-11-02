@@ -136,6 +136,39 @@ def _to_number(value):
     return value
 
 
+def _player_flags(d: dict) -> dict:
+    """Roster-rule flags from player meta, emitted **only when set**.
+
+    Yahoo sends ``is_undroppable`` (``"0"``/``"1"``) and ``is_keeper``
+    (``{"status", "cost", "kept"}``, all ``false`` outside keeper leagues) on
+    every player (live shapes, 2026-11-02), so a key that is always present
+    but almost always false would be noise on every player of every list.
+    Instead: ``is_undroppable: true`` appears only for an undroppable player
+    (the NFL league marks 20 elite players so), and ``keeper`` only when the
+    player is a keeper (``status`` or ``kept`` set), carrying all three
+    fields — absent means false. Accepts the raw form or the already
+    flattened one (``is_undroppable: True`` / ``keeper: {...}``), so both the
+    flattener and ``_format_player`` can call it.
+    """
+    out: dict = {}
+    if _is_set(d.get("is_undroppable")):
+        out["is_undroppable"] = True
+    keeper = d.get("keeper") or d.get("is_keeper")
+
+    def _on(v) -> bool:  # Yahoo uses JSON booleans here; tolerate 0/1 forms
+        return v not in (False, None, "", "0", 0)
+
+    if isinstance(keeper, dict) and (_on(keeper.get("status")) or _on(keeper.get("kept"))):
+        cost = keeper.get("cost")
+        out["keeper"] = {
+            "status": _on(keeper.get("status")),
+            "kept": _on(keeper.get("kept")),
+            # Keeper price (round or $, per league); Yahoo sends false for none.
+            "cost": _to_number(cost) if _on(cost) else None,
+        }
+    return out
+
+
 def _value_and_delta(node) -> tuple:
     """Read ``(value, delta)`` from a Yahoo percent_owned/percent_started
     node — ``{"value": 24, "delta": "1"}`` or ``[{coverage}, {"value": 91},
@@ -193,6 +226,7 @@ def _flatten_raw_yahoo_player(player_entry: list, scoring: ScoringConfig) -> dic
                 flat["status_full"] = item["status_full"]
             if "display_position" in item:
                 flat.setdefault("display_position", item["display_position"])
+            flat.update(_player_flags(item))
             # bye_weeks is {"week": "10"} for football; baseball sends none.
             bw = item.get("bye_weeks")
             if isinstance(bw, dict) and bw.get("week") not in (None, ""):

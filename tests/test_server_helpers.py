@@ -1022,6 +1022,17 @@ def test_team_schedule_unknown_team_is_an_error(monkeypatch):
     assert res.startswith("Error: Team number 30 not found") and urls == []
 
 
+def test_format_player_surfaces_flags_from_raw_meta():
+    # Player-lookup paths hand _format_player raw meta.
+    out = server._format_player({
+        "name": "Josh Allen", "is_undroppable": "1",
+        "is_keeper": {"status": False, "cost": False, "kept": False},
+    })
+    assert out["is_undroppable"] is True and "keeper" not in out
+    assert "is_undroppable" not in server._format_player(
+        {"name": "X", "is_undroppable": "0"})
+
+
 # --- Host validation on the built ASGI app --------------------------------
 #
 # The transport_security wiring in build_app() is a production-only failure
