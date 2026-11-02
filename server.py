@@ -2043,6 +2043,12 @@ async def yahoo_get_player_notes(params: GetPlayerNotesInput) -> str:
                                          "injury_note", "on_disabled_list"):
                                 if fld in m:
                                     player_info[fld] = m[fld]
+                            # Name as the full-name string, as every other
+                            # tool emits it (see _format_player).
+                            if isinstance(player_info.get("name"), dict):
+                                player_info["name"] = (
+                                    player_info["name"].get("full") or "Unknown"
+                                )
                             # Sport-neutral output key (see _format_player).
                             if "editorial_team_abbr" in m:
                                 player_info["pro_team"] = m["editorial_team_abbr"]
