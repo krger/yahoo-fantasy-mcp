@@ -230,6 +230,7 @@ Be defensive:
 
 - Responses are **deeply nested and positional** — arrays interleave data objects with empty `[]` placeholders, and collections use **numeric string keys** (`"0"`, `"1"`, ...) plus a `count`. Never assume a fixed index; locate data by key/shape, not by position.
 - Stats arrive as `{stat: {stat_id, value}}` lists — map by `stat_id` (labels/scoring come from the league-derived `ScoringConfig`), never by order.
+- An **empty collection can arrive as a bare `[]`** instead of a dict with `count: 0` — seen live on `transactions` (`types=trade` in a league with no trades → `"transactions": []`). Check `isinstance(..., dict)` before calling `.items()` on any collection.
 - Some endpoints require parameters that look optional. **Default them explicitly in the handler** rather than relying on the upstream call to fill them in.
 
 ## Known issues / fragile areas
