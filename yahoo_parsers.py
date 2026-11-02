@@ -136,6 +136,26 @@ def _to_number(value):
     return value
 
 
+def _value_and_delta(node) -> tuple:
+    """Read ``(value, delta)`` from a Yahoo percent_owned/percent_started
+    node — ``{"value": 24, "delta": "1"}`` or ``[{coverage}, {"value": 91},
+    {"delta": 18}]`` (live shapes, 2026-11-02). Missing parts are ``None``;
+    numbers are coerced (Yahoo sends ``delta`` as a string)."""
+    parts: dict = {}
+    if isinstance(node, dict):
+        parts = node
+    elif isinstance(node, list):
+        for sub in node:
+            if isinstance(sub, dict):
+                parts = {**parts, **sub}
+    value = parts.get("value")
+    delta = parts.get("delta")
+    return (
+        _to_number(value) if value not in (None, "") else None,
+        _to_number(delta) if delta not in (None, "") else None,
+    )
+
+
 def _flatten_raw_yahoo_player(player_entry: list, scoring: ScoringConfig) -> dict:
     """Flatten Yahoo's list-of-dicts player representation into the flat
     shape that ``_format_player`` expects.
@@ -173,6 +193,10 @@ def _flatten_raw_yahoo_player(player_entry: list, scoring: ScoringConfig) -> dic
                 flat["status_full"] = item["status_full"]
             if "display_position" in item:
                 flat.setdefault("display_position", item["display_position"])
+            # bye_weeks is {"week": "10"} for football; baseball sends none.
+            bw = item.get("bye_weeks")
+            if isinstance(bw, dict) and bw.get("week") not in (None, ""):
+                flat["bye_week"] = _to_int(str(bw["week"]))
             if "eligible_positions" in item:
                 eps = item["eligible_positions"]
                 if isinstance(eps, list):
@@ -186,14 +210,17 @@ def _flatten_raw_yahoo_player(player_entry: list, scoring: ScoringConfig) -> dic
     for extra in player_entry[1:]:
         if not isinstance(extra, dict):
             continue
-        po = extra.get("percent_owned")
-        if isinstance(po, dict) and "value" in po:
-            flat["percent_owned"] = po["value"]
-        elif isinstance(po, list):
-            for sub in po:
-                if isinstance(sub, dict) and "value" in sub:
-                    flat["percent_owned"] = sub["value"]
-                    break
+        # percent_owned / percent_started: a value plus the change since the
+        # previous coverage period (``delta``), as a dict or as a list of
+        # single-key dicts after a coverage header. Either part can be absent
+        # (a widely-unowned player may carry only a delta; percent_started can
+        # be a bare coverage header), so each is surfaced only when present.
+        for res in ("percent_owned", "percent_started"):
+            value, delta = _value_and_delta(extra.get(res))
+            if value is not None:
+                flat[res] = value
+            if delta is not None:
+                flat[f"{res}_delta"] = delta
 
         ps = extra.get("player_stats")
         if isinstance(ps, dict):

@@ -297,6 +297,23 @@ def test_format_player_flattens_raw_yahoo_player_meta():
     assert out["eligible_positions"] == ["QB", "SUPERFLEX"]
 
 
+def test_format_player_bye_week_and_percent_fields():
+    # Raw meta (player-lookup paths) carries bye_weeks as {"week": "10"}.
+    out = server._format_player({"name": "X", "bye_weeks": {"week": "10"}})
+    assert out["bye_week"] == 10
+    # Flattened players-collection fields pass through; a 0 delta is kept.
+    out = server._format_player({
+        "name": "Y", "bye_week": 6, "percent_owned": 100,
+        "percent_owned_delta": 0, "percent_started": 91,
+        "percent_started_delta": 18,
+    })
+    assert (out["bye_week"], out["percent_owned_delta"], out["percent_started"],
+            out["percent_started_delta"]) == (6, 0, 91, 18)
+    # Baseball: nothing sent, nothing emitted.
+    out = server._format_player({"name": "Z"})
+    assert not {"bye_week", "percent_started", "percent_owned_delta"} & set(out)
+
+
 def test_format_player_keeps_already_flat_shape():
     # roster/free-agent input is already flat and must pass through unchanged.
     out = server._format_player({
@@ -847,6 +864,9 @@ def test_roster_include_stats_adds_season_and_current_week_points(monkeypatch):
     assert p["week_points"] == 42.48
     assert res["stats_week"] == 8  # resolved to the current week
     assert any("/stats;type=week;week=8" in u for u in urls)
+    assert p["bye_week"] == 6  # from the season fetch's player meta
+    season_url = next(u for u in urls if "/stats;type=" not in u)
+    assert ";out=stats,percent_owned,percent_started" in season_url
 
 
 def test_roster_include_stats_uses_requested_week(monkeypatch):

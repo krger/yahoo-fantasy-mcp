@@ -381,7 +381,19 @@ def _format_player(player: dict) -> dict:
         # under a sport-neutral key so it reads correctly across MLB/NFL/etc.
         info["pro_team"] = player.get("editorial_team_abbr", "")
         info["player_id"] = player.get("player_id", "")
+        # Bye week (football): the flattened ``bye_week`` from the players
+        # collection, or raw meta's ``bye_weeks: {"week": "10"}`` from the
+        # player-lookup paths. Baseball sends neither.
+        bye = player.get("bye_week")
+        if bye is None and isinstance(player.get("bye_weeks"), dict):
+            raw_bye = player["bye_weeks"].get("week")
+            bye = int(raw_bye) if str(raw_bye).isdigit() else raw_bye
+        info["bye_week"] = "" if bye is None else bye
         info["percent_owned"] = player.get("percent_owned", "")
+        # Change since the previous period, and how widely the player is
+        # started — present when fetched with ;out=percent_owned/percent_started.
+        for key in ("percent_owned_delta", "percent_started", "percent_started_delta"):
+            info[key] = player.get(key, "")
     out = {k: v for k, v in info.items() if v != "" and v != []}
     # Per-category stats are present for free agents (fetched with ;out=stats);
     # roster/other callers won't have them, so only surface when non-empty.
@@ -486,7 +498,7 @@ def _fetch_free_agents_raw(
     sort: Optional[str] = "AR",
     count: int = 25,
     time_period: Optional[str] = None,
-    out_fields: str = "percent_owned,stats",
+    out_fields: str = "percent_owned,percent_started,stats",
 ) -> list[dict]:
     """Call Yahoo's /players collection directly and return a list of flat
     player dicts matching the shape ``_format_player`` consumes.
@@ -533,8 +545,9 @@ def _fetch_free_agents_raw(
     start = 0
     while len(collected) < requested:
         page_filters = filters + [f"count={PAGE}", f"start={start}"]
-        # Request percent_owned + season stats (and, for taken players,
-        # ownership) inline so each player carries them without a follow-up call.
+        # Request percent owned/started + season stats (and, for taken
+        # players, ownership) inline so each player carries them without a
+        # follow-up call.
         filter_str = ";".join(page_filters) + f";out={out_fields}"
         url = (
             f"https://fantasysports.yahooapis.com/fantasy/v2/"
@@ -647,7 +660,9 @@ def _fetch_player_stats_by_keys(
     elif day is not None:
         coverage = f"/stats;type=date;date={day.isoformat()}"
     else:
-        coverage = ";out=stats"
+        # Season coverage also brings percent owned/started (with deltas);
+        # bye_week rides in every player's meta regardless.
+        coverage = ";out=stats,percent_owned,percent_started"
     players = _fetch_players_by_keys(sc, league_key, player_keys, scoring, coverage)
     return {pid: flat for pid, flat in players.items() if flat.get("stats")}
 
@@ -885,7 +900,9 @@ async def yahoo_get_roster(params: GetRosterInput = GetRosterInput()) -> str:
     football) players also carry 'points' (season fantasy points) and
     'week_points' (fantasy points for stats_week; starters' week_points sum
     to the matchup total). Categories leagues have no fantasy points, so
-    the *_points keys are absent there.
+    the *_points keys are absent there. include_stats also adds
+    'bye_week' (football), 'percent_owned' / 'percent_started' and their
+    '_delta' changes.
 
     Args:
         params (GetRosterInput): Validated input parameters containing:
@@ -970,6 +987,11 @@ async def yahoo_get_roster(params: GetRosterInput = GetRosterInput()) -> str:
                         stats_week = None
             for p in formatted:
                 pid = str(p.get("player_id", ""))
+                season = season_by_id.get(pid, {})
+                for key in ("bye_week", "percent_owned", "percent_owned_delta",
+                            "percent_started", "percent_started_delta"):
+                    if season.get(key) is not None:
+                        p[key] = season[key]
                 for prefix, src in (("", season_by_id), (f"{period}_", period_by_id)):
                     flat = src.get(pid, {})
                     if flat.get("stats"):
@@ -1123,7 +1145,10 @@ async def yahoo_search_free_agents(
     percentage, and a ``stats`` map of the player's season totals per
     scoring category (derived from the league's own settings — e.g. baseball
     R/HR/RBI/SB/AVG and W/SV/K/ERA/WHIP, or football passing/rushing/receiving
-    yards and TDs).
+    yards and TDs). Also, when Yahoo sends them: 'percent_owned_delta' (change
+    since the previous period — a rising number flags a trending pickup),
+    'percent_started' and 'percent_started_delta', 'bye_week' (football),
+    and 'points' (season fantasy points, points leagues only).
 
     Args:
         params (SearchFreeAgentsInput): Validated input containing:
@@ -1202,7 +1227,8 @@ async def yahoo_get_waivers(params: GetWaiversInput = GetWaiversInput()) -> str:
     you spot a just-dropped useful player before he clears and time a claim
     (place the claim in the Yahoo UI — this server is read-only). Returns the
     same per-player shape as the free-agent search: name, positions, pro
-    team, percent owned, and a ``stats`` map of season category totals.
+    team, percent owned/started (with deltas), bye week (football), and a
+    ``stats`` map of season category totals.
 
     Args:
         params (GetWaiversInput): Validated input containing:
@@ -1271,8 +1297,8 @@ async def yahoo_get_taken_players(
     no other tool produces. Use it to find trade targets by category need
     (e.g. who holds the closers/SB sources, or the RB depth) without
     fetching all teams' rosters one by one. Each player also carries
-    positions, pro team, percent owned, and a ``stats`` map of season
-    category totals.
+    positions, pro team, percent owned/started (with deltas), bye week
+    (football), and a ``stats`` map of season category totals.
 
     Args:
         params (GetTakenPlayersInput): Validated input containing:
@@ -1303,7 +1329,7 @@ async def yahoo_get_taken_players(
             sort=params.sort or "AR",
             count=params.count or 300,
             time_period=params.time_period,
-            out_fields="percent_owned,stats,ownership",
+            out_fields="percent_owned,percent_started,stats,ownership",
         )
 
         formatted = [_format_player(p) for p in players]
@@ -2408,6 +2434,7 @@ def analyze_matchup(team_number: str = "") -> str:
     """Summarize the current head-to-head matchup (categories or points)."""
     whose = f"team {team_number}" if team_number else "my team"
     arg = f" with team_number={team_number}" if team_number else ""
+    roster_args = f"team_number={team_number}, " if team_number else ""
     return (
         f"Analyze {whose}'s current head-to-head matchup. Call yahoo_get_matchup{arg}. "
         "The result's `scoring` field says how the league is scored. If "
@@ -2415,7 +2442,9 @@ def analyze_matchup(team_number: str = "") -> str:
         "tied, with current values and margins, call out the closest and the "
         "effectively-decided ones, and give the projected category score. If "
         "`points`: report both teams' fantasy-points totals (and projected_points), "
-        "the current margin, and whether it's a likely win, loss, or tossup. "
+        "the current margin, and Yahoo's win_probability when present, then call "
+        f"yahoo_get_roster with {roster_args}include_stats=true and use each starter's "
+        "week_points to say who has carried the week. "
         "Finish with one sentence on where the matchup will be won or lost. "
         "If I mention a specific league, call yahoo_list_my_leagues first and pass "
         "the matching league_id to the tools."
@@ -2427,6 +2456,7 @@ def waiver_help(team_number: str = "") -> str:
     """Find free-agent pickups that target the categories I'm losing."""
     whose = f"team {team_number}" if team_number else "my team"
     arg = f" with team_number={team_number}" if team_number else ""
+    roster_args = f"team_number={team_number}, " if team_number else ""
     return (
         f"Help me find waiver pickups for {whose}.\n"
         f"1. Call yahoo_get_matchup{arg} and note the `scoring` field.\n"
@@ -2435,10 +2465,12 @@ def waiver_help(team_number: str = "") -> str:
         "yahoo_search_free_agents sorted by that category's stat with "
         "time_period=lastweek to surface players in good recent form (e.g. sort=SB "
         "for steals, sort=HR for power, or the football stat label for the need). "
-        "If a points league: identify my weakest starting spots (injuries, byes, "
-        "low output), then call yahoo_search_free_agents by position (sorted by AR "
-        "or a relevant stat, time_period=lastweek) to find the best available "
-        "upgrades.\n"
+        f"If a points league: call yahoo_get_roster with {roster_args}include_stats=true and "
+        "identify my weakest starting spots (injuries, upcoming bye_week, low "
+        "points/week_points), then call yahoo_search_free_agents by position "
+        "(sort=PTS, or time_period=lastweek with a stat sort) to find the best "
+        "available upgrades. In either league, a large positive "
+        "percent_owned_delta flags a player other managers are grabbing.\n"
         "3. Recommend 3-5 available players who would most improve my team, each "
         "with a one-line rationale and their recent numbers.\n"
         "If I mention a specific league, call yahoo_list_my_leagues first and pass "

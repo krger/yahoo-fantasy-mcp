@@ -119,8 +119,10 @@ class GetRosterInput(LeagueScopedInput):
             "given, else 'week_stats' for 'week' or the current week "
             "(football only — Yahoo serves no weekly player stats for "
             "baseball). In a points league players also get season and "
-            "weekly fantasy points ('points', 'week_points'). Two extra "
-            "batched calls. Default false keeps the roster lightweight."
+            "weekly fantasy points ('points', 'week_points'). Also adds "
+            "'bye_week' (football) and percent owned/started with their "
+            "deltas. Two extra batched calls. Default false keeps the roster "
+            "lightweight."
         ),
     )
 

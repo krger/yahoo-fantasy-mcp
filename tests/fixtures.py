@@ -402,6 +402,7 @@ PLAYER_ENTRY_POINTS_WEEK = [
         {"editorial_team_abbr": "Cin"},
         {"display_position": "QB"},
         {"position_type": "O"},
+        {"bye_weeks": {"week": "6"}},
         {"eligible_positions": [{"position": "QB"}]},
     ],
     {
@@ -418,6 +419,18 @@ PLAYER_ENTRY_POINTS_WEEK = [
             "total": "42.48",
         },
     },
+]
+
+
+# percent_owned / percent_started sub-resources in their live list form
+# (players;…;out=percent_owned,percent_started, NFL 1529868, 2026-11-02):
+# a coverage header then single-key value/delta dicts. Burrow's real figures.
+PLAYER_ENTRY_TRENDING = [
+    PLAYER_ENTRY_POINTS_WEEK[0],
+    {"percent_owned": [{"coverage_type": "week", "week": "8"},
+                       {"value": 100}, {"delta": "1"}]},
+    {"percent_started": [{"coverage_type": "week", "week": 8},
+                         {"value": 91}, {"delta": 18}]},
 ]
 
 

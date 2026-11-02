@@ -482,6 +482,39 @@ def test_flatten_raw_yahoo_player_extracts_owner_team():
     assert flat["stats"] == {"SV": 14, "K": 31}
 
 
+# --- percent owned/started + bye week -------------------------------------
+
+def test_flatten_raw_yahoo_player_percent_started_deltas_and_bye():
+    flat = parsers._flatten_raw_yahoo_player(fx.PLAYER_ENTRY_TRENDING, SCORING_PTS)
+    assert flat["bye_week"] == 6
+    assert flat["percent_owned"] == 100
+    assert flat["percent_owned_delta"] == 1  # Yahoo sends it as a string
+    assert flat["percent_started"] == 91
+    assert flat["percent_started_delta"] == 18
+
+
+def test_flatten_raw_yahoo_player_partial_percent_nodes():
+    # Live: a barely-owned player can carry only a delta, and percent_started
+    # can be a bare coverage header. Surface what is there, nothing more.
+    entry = [fx.PLAYER_ENTRY_POINTS_WEEK[0],
+             {"percent_owned": [{"coverage_type": "week", "week": 8}, {"delta": "0"}]},
+             {"percent_started": [{"coverage_type": "date", "date": "2026-11-02"}]}]
+    flat = parsers._flatten_raw_yahoo_player(entry, SCORING_PTS)
+    assert "percent_owned" not in flat
+    assert flat["percent_owned_delta"] == 0
+    assert "percent_started" not in flat and "percent_started_delta" not in flat
+
+
+def test_flatten_raw_yahoo_player_dict_percent_owned_still_parses():
+    # The pre-existing dict form keeps working, now with an optional delta.
+    assert parsers._flatten_raw_yahoo_player(fx.PLAYER_ENTRY, SCORING)["percent_owned"] == 24
+    assert "percent_owned_delta" not in parsers._flatten_raw_yahoo_player(fx.PLAYER_ENTRY, SCORING)
+
+
+def test_flatten_raw_yahoo_player_baseball_has_no_bye_week():
+    assert "bye_week" not in parsers._flatten_raw_yahoo_player(fx.PLAYER_ENTRY, SCORING)
+
+
 # --- draft results + draft analysis ----------------------------------------
 
 def test_parse_draft_results_live_shape_in_pick_order():
