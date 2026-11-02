@@ -435,6 +435,7 @@ _FULLY_OPTIONAL_TOOLS = {
     "yahoo_get_transactions",
     "yahoo_list_teams",
     "yahoo_get_draft_results",
+    "yahoo_get_team_schedule",
     "yahoo_list_my_leagues",  # takes no params argument at all
 }
 
@@ -970,6 +971,66 @@ def test_draft_results_unknown_team_is_an_error(monkeypatch):
     res, urls = _run_draft(monkeypatch, team_number=30)
     assert res.startswith("Error: Team number 30 not found")
     assert urls == []  # rejected before any Yahoo call
+
+
+# --- team schedule ----------------------------------------------------------
+
+
+def _run_schedule(monkeypatch, **kw):
+    import json as _json
+
+    from tests import fixtures as fx
+    from yahoo_parsers import build_scoring_config
+
+    urls = []
+
+    class _S:
+        def get(self, url):
+            urls.append(url)
+            r = type("_Resp", (), {"status_code": 200,
+                                   "json": lambda self: fx.SCHEDULE_RAW_POINTS})()
+            r.raise_for_status = lambda: None
+            return r
+
+    sc = type("_SC", (), {"session": _S()})()
+    lk = "470.l.1529868"
+    lg = type("_LG", (), {"league_key": lk})()
+    lg.teams = lambda: {
+        f"{lk}.t.{n}": {"name": f"Team {n}", "is_owned_by_current_login": int(n == 4)}
+        for n in range(1, 11)
+    }
+    monkeypatch.setattr(server, "_get_oauth_session", lambda: sc)
+    monkeypatch.setattr(server, "_get_league", lambda sc, lid: lg)
+    monkeypatch.setattr(server, "_resolved_league_id", lambda lg: "1529868")
+    monkeypatch.setattr(server, "_get_scoring_config",
+                        lambda sc, lg: build_scoring_config(fx.SETTINGS_RAW_POINTS))
+    out = asyncio.run(server.yahoo_get_team_schedule(server.GetTeamScheduleInput(**kw)))
+    return (out if out.startswith("Error:") else _json.loads(out)), urls
+
+
+def test_team_schedule_defaults_to_own_team_in_one_call(monkeypatch):
+    res, urls = _run_schedule(monkeypatch)
+    assert res["team_key"] == "470.l.1529868.t.4"
+    assert res["scoring"] == "points"
+    assert res["week_count"] == 2 and [w["week"] for w in res["weeks"]] == [1, 15]
+    assert len(urls) == 1 and urls[0].endswith("team/470.l.1529868.t.4/matchups?format=json")
+
+
+def test_team_schedule_unknown_team_is_an_error(monkeypatch):
+    monkeypatch.setattr(server, "_resolve_team_key", lambda lg, teams, n: None)
+    res, urls = _run_schedule(monkeypatch, team_number=30)
+    assert res.startswith("Error: Team number 30 not found") and urls == []
+
+
+def test_format_player_surfaces_flags_from_raw_meta():
+    # Player-lookup paths hand _format_player raw meta.
+    out = server._format_player({
+        "name": "Josh Allen", "is_undroppable": "1",
+        "is_keeper": {"status": False, "cost": False, "kept": False},
+    })
+    assert out["is_undroppable"] is True and "keeper" not in out
+    assert "is_undroppable" not in server._format_player(
+        {"name": "X", "is_undroppable": "0"})
 
 
 # --- Host validation on the built ASGI app --------------------------------

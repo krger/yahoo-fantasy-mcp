@@ -120,9 +120,9 @@ class GetRosterInput(LeagueScopedInput):
             "(football only — Yahoo serves no weekly player stats for "
             "baseball). In a points league players also get season and "
             "weekly fantasy points ('points', 'week_points'). Also adds "
-            "'bye_week' (football) and percent owned/started with their "
-            "deltas. Two extra batched calls. Default false keeps the roster "
-            "lightweight."
+            "'bye_week' (football), percent owned/started with their deltas, "
+            "and 'is_undroppable' / 'keeper' when set. Two extra batched "
+            "calls. Default false keeps the roster lightweight."
         ),
     )
 
@@ -288,6 +288,20 @@ class GetTransactionsInput(LeagueScopedInput):
         description="Number of transactions to return (default 25, max 50).",
         ge=1,
         le=50,
+    )
+
+
+class GetTeamScheduleInput(LeagueScopedInput):
+    """Input for a team's full-season schedule of matchups."""
+
+    team_number: Optional[int] = Field(
+        default=None,
+        description=(
+            "Team number (1-based). If omitted, returns the authenticated "
+            "user's team schedule."
+        ),
+        ge=1,
+        le=30,
     )
 
 

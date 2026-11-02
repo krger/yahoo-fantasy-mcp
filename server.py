@@ -55,6 +55,7 @@ from schemas import (
     GetScoreboardInput,
     GetStandingsInput,
     GetTakenPlayersInput,
+    GetTeamScheduleInput,
     GetTransactionsInput,
     GetWaiversInput,
     ListTeamsInput,
@@ -72,7 +73,9 @@ from yahoo_parsers import (
     _parse_my_leagues,
     _parse_scoreboard,
     _parse_standings,
+    _parse_team_schedule,
     _parse_team_season_stats,
+    _player_flags,
     _rank_season_categories,
     _resolve_team_key,
     _team_activity,
@@ -405,6 +408,9 @@ def _format_player(player: dict) -> dict:
     points = player.get("points") if isinstance(player, dict) else None
     if points is not None:
         out["points"] = points
+    # Roster-rule flags, present only when set (absent = false).
+    if isinstance(player, dict):
+        out.update(_player_flags(player))
     # Owner team is present only for taken players (fetched with ;out=ownership).
     ownership = player.get("ownership") if isinstance(player, dict) else None
     if ownership:
@@ -902,7 +908,8 @@ async def yahoo_get_roster(params: GetRosterInput = GetRosterInput()) -> str:
     to the matchup total). Categories leagues have no fantasy points, so
     the *_points keys are absent there. include_stats also adds
     'bye_week' (football), 'percent_owned' / 'percent_started' and their
-    '_delta' changes.
+    '_delta' changes, and — only when set — 'is_undroppable': true and
+    'keeper' ({status, kept, cost}).
 
     Args:
         params (GetRosterInput): Validated input parameters containing:
@@ -989,7 +996,8 @@ async def yahoo_get_roster(params: GetRosterInput = GetRosterInput()) -> str:
                 pid = str(p.get("player_id", ""))
                 season = season_by_id.get(pid, {})
                 for key in ("bye_week", "percent_owned", "percent_owned_delta",
-                            "percent_started", "percent_started_delta"):
+                            "percent_started", "percent_started_delta",
+                            "is_undroppable", "keeper"):
                     if season.get(key) is not None:
                         p[key] = season[key]
                 for prefix, src in (("", season_by_id), (f"{period}_", period_by_id)):
@@ -1148,7 +1156,10 @@ async def yahoo_search_free_agents(
     yards and TDs). Also, when Yahoo sends them: 'percent_owned_delta' (change
     since the previous period — a rising number flags a trending pickup),
     'percent_started' and 'percent_started_delta', 'bye_week' (football),
-    and 'points' (season fantasy points, points leagues only).
+    and 'points' (season fantasy points, points leagues only). Roster-rule
+    flags appear only when set: 'is_undroppable': true (the league forbids
+    dropping the player) and 'keeper' ({status, kept, cost}) in keeper
+    leagues — absent means false.
 
     Args:
         params (SearchFreeAgentsInput): Validated input containing:
@@ -1920,6 +1931,76 @@ async def yahoo_get_transactions(
             },
             "count": len(transactions),
             "transactions": transactions,
+        }, indent=2, default=str)
+
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool(
+    name="yahoo_get_team_schedule",
+    annotations={
+        "title": "Get Team Schedule",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def yahoo_get_team_schedule(
+    params: GetTeamScheduleInput = GetTeamScheduleInput(),
+) -> str:
+    """Get a team's whole season of head-to-head matchups in one call.
+
+    One entry per scheduled week — past, current and future — with 'week',
+    'week_start'/'week_end', 'status' (preevent/midevent/postevent),
+    'is_playoffs', 'is_consolation', the 'team' and 'opponent' (same shape
+    as yahoo_get_matchup: 'points', 'projected_points' and, where Yahoo
+    provides it, 'win_probability' in a points league; 'category_points' in
+    a categories league), the week's overall 'result' (win/loss/tie, null
+    until decided), and Yahoo's matchup 'grades' when present. Use it for
+    strength of schedule, upcoming opponents, or a season recap; for one
+    week's category-by-category detail use yahoo_get_matchup.
+
+    A week missing from the list is a real gap: a playoff bye, or playoff
+    weeks Yahoo hasn't scheduled until seeding is set.
+
+    Args:
+        params (GetTeamScheduleInput): Validated input containing:
+            - team_number (Optional[int]): Team number, or None for own team.
+            - league_id (Optional[str]): League override, or None for default.
+
+    Returns:
+        str: JSON object with the team's season schedule.
+    """
+    try:
+        sc = _get_oauth_session()
+        lg = _get_league(sc, params.league_id)
+        teams = lg.teams()
+
+        team_key = _resolve_team_key(lg, teams, params.team_number)
+        if team_key is None:
+            return (
+                f"Error: Team number {params.team_number} not found. "
+                f"League has {len(teams)} teams (valid range: 1-{len(teams)})."
+            )
+
+        url = (
+            "https://fantasysports.yahooapis.com/fantasy/v2/"
+            f"team/{team_key}/matchups?format=json"
+        )
+        resp = sc.session.get(url)
+        resp.raise_for_status()
+        scoring = _get_scoring_config(sc, lg)
+        weeks = _parse_team_schedule(resp.json(), team_key, scoring)
+
+        return json.dumps({
+            "league_id": _resolved_league_id(lg),
+            "team_name": teams.get(team_key, {}).get("name"),
+            "team_key": team_key,
+            "scoring": "points" if scoring.is_points_league else "categories",
+            "week_count": len(weeks),
+            "weeks": weeks,
         }, indent=2, default=str)
 
     except Exception as e:

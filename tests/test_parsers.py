@@ -515,6 +515,83 @@ def test_flatten_raw_yahoo_player_baseball_has_no_bye_week():
     assert "bye_week" not in parsers._flatten_raw_yahoo_player(fx.PLAYER_ENTRY, SCORING)
 
 
+# --- full-season schedule ---------------------------------------------------
+
+def test_team_schedule_points_league_sorted_with_results_and_grades():
+    weeks = parsers._parse_team_schedule(
+        fx.SCHEDULE_RAW_POINTS, "470.l.1529868.t.4", SCORING_PTS)
+    assert [w["week"] for w in weeks] == [1, 15]
+    w1, w15 = weeks
+    assert w1["status"] == "postevent" and w1["result"] == "loss"
+    assert w1["team"]["points"] == 103.16 and w1["opponent"]["points"] == 132.10
+    assert w1["grades"] == {"team": "D+", "opponent": "A+"}
+    assert w1["is_consolation"] is False and w1["is_playoffs"] is False
+    # A future week: undecided, zero points, but real projections + odds.
+    assert w15["status"] == "preevent" and w15["result"] is None
+    assert w15["opponent"]["name"] == "Quick Snap Robert"
+    assert w15["team"]["points"] == 0.0
+    assert w15["team"]["projected_points"] == 93.74
+    assert w15["team"]["win_probability"] == 0.49
+    assert "grades" not in w15
+    # Compact: no per-stat detail in a schedule entry.
+    assert "stat_lines" not in w1 and "categories" not in w1
+
+
+def test_team_schedule_categories_league_overall_result_and_tie():
+    weeks = parsers._parse_team_schedule(
+        fx.SCHEDULE_RAW_CATEGORIES, "469.l.1.t.5", SCORING)
+    # The unresolvable week-15 node is skipped, not fatal.
+    assert [w["week"] for w in weeks] == [10, 14]
+    won, tied = weeks
+    assert won["result"] == "win"
+    assert won["team"]["category_points"] == 2
+    assert won["opponent"]["name"] == "Perfect Pitch"
+    assert tied["result"] == "tie"
+    assert "win_probability" not in won["team"]
+
+
+def test_team_schedule_tolerates_bad_shapes():
+    assert parsers._parse_team_schedule({}, "t", SCORING) == []
+    raw = {"fantasy_content": {"team": [[], {"matchups": []}]}}
+    assert parsers._parse_team_schedule(raw, "t", SCORING) == []
+
+
+def test_overall_result_reads_winner_tie_and_undecided():
+    assert parsers._overall_result({"winner_team_key": "a"}, "a", "b") == "win"
+    assert parsers._overall_result({"winner_team_key": "b"}, "a", "b") == "loss"
+    assert parsers._overall_result({"is_tied": "1"}, "a", "b") == "tie"
+    # is_tied "0" is NOT a tie (the truthiness bug #66 fixed elsewhere)
+    assert parsers._overall_result({"is_tied": "0"}, "a", "b") is None
+
+
+# --- roster-rule player flags ----------------------------------------------
+
+def test_flatten_raw_yahoo_player_undroppable_flag():
+    flat = parsers._flatten_raw_yahoo_player(fx.PLAYER_ENTRY_UNDROPPABLE, SCORING_PTS)
+    assert flat["name"] == "Josh Allen"
+    assert flat["is_undroppable"] is True
+    assert "keeper" not in flat  # all-false is_keeper -> absent
+
+
+def test_player_flags_absent_when_unset():
+    # Every live player carries is_undroppable "0" + an all-false is_keeper.
+    assert parsers._player_flags({
+        "is_undroppable": "0",
+        "is_keeper": {"status": False, "cost": False, "kept": False},
+    }) == {}
+    assert parsers._player_flags({}) == {}
+
+
+def test_player_flags_keeper_normalized():
+    out = parsers._player_flags({"is_keeper": {"status": True, "cost": "5", "kept": False}})
+    assert out == {"keeper": {"status": True, "kept": False, "cost": 5}}
+    # String "0" flags must not read as set.
+    assert parsers._player_flags({"is_keeper": {"status": "0", "kept": "0"}}) == {}
+    # The flattened form round-trips (what _format_player sees).
+    assert parsers._player_flags(out) == out
+    assert parsers._player_flags({"is_undroppable": True}) == {"is_undroppable": True}
+
+
 # --- draft results + draft analysis ----------------------------------------
 
 def test_parse_draft_results_live_shape_in_pick_order():
