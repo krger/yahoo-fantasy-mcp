@@ -192,6 +192,51 @@ def test_handle_error_generic_includes_type_and_message():
     assert "ValueError" in msg and "boom" in msg
 
 
+def test_handle_error_ignores_status_like_digits_inside_ids():
+    # League ids containing 401/403/404 used to be misread as HTTP statuses —
+    # the first told the caller to delete working credentials.
+    for lid in ("1440123", "2403", "60404"):
+        msg = server._handle_error(
+            ValueError(f"League id '{lid}' is not one of your leagues.")
+        )
+        assert msg.startswith("Error: ValueError — "), msg
+        assert lid in msg
+
+
+class _FakeHTTPError(Exception):
+    """Shaped like requests.HTTPError: carries .response.status_code."""
+
+    def __init__(self, status, text="boom"):
+        super().__init__(text)
+        self.response = type("_Resp", (), {"status_code": status})()
+
+
+def test_handle_error_classifies_by_http_status_when_present():
+    assert "Authentication failed" in server._handle_error(_FakeHTTPError(401))
+    assert "Access denied" in server._handle_error(_FakeHTTPError(403))
+    assert "Resource not found" in server._handle_error(_FakeHTTPError(404))
+    assert server._handle_error(_FakeHTTPError(500)).startswith("Error: _FakeHTTPError")
+
+
+def test_handle_error_classifies_yahoo_body_phrases():
+    # yfa raises RuntimeError(response.content) — Yahoo's body, no status code.
+    expired = RuntimeError(b'{"error":{"description":"oauth_problem=\\"token_expired\\""}}')
+    assert "Authentication failed" in server._handle_error(expired)
+    unapproved = RuntimeError(
+        b'{"error":{"description":"This application is not authorized '
+        b'to perform this action"}}'
+    )
+    assert "Access denied" in server._handle_error(unapproved)
+
+
+def test_handle_error_missing_credentials_file_is_not_a_bad_id():
+    msg = server._handle_error(
+        FileNotFoundError("OAuth credentials file not found at /x/oauth2.json.")
+    )
+    assert "Check the ID or key" not in msg
+    assert "oauth2.json" in msg
+
+
 # --- advertised input schemas (the public MCP contract) --------------------
 #
 # Tools whose fields are ALL optional take a shared default `params` instance
