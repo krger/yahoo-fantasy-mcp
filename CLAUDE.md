@@ -260,6 +260,7 @@ Be defensive:
 - Responses are **deeply nested and positional** — arrays interleave data objects with empty `[]` placeholders, and collections use **numeric string keys** (`"0"`, `"1"`, ...) plus a `count`. Never assume a fixed index; locate data by key/shape, not by position.
 - Stats arrive as `{stat: {stat_id, value}}` lists — map by `stat_id` (labels/scoring come from the league-derived `ScoringConfig`), never by order.
 - An **empty collection can arrive as a bare `[]`** instead of a dict with `count: 0` — seen live on `transactions` (`types=trade` in a league with no trades → `"transactions": []`). Check `isinstance(..., dict)` before calling `.items()` on any collection.
+- **League-specific player meta is only right on a league-scoped request.** `is_undroppable` reads `"1"` from `league/{key}/players;player_keys=…` but `"0"` from the bare `players;player_keys=…` for the same player (raw-checked 2026-11-02, Josh Allen in NFL 1529868). Any player fetch whose output carries league rules must go through `league/{key}/…` — `yahoo_get_players_batch` used the bare form until v2.7.1. (`yahoo_get_player_stats`' embedded raw `player_stats` blob still comes from the bare endpoint, so its raw `is_undroppable` can disagree with the tool's correct top-level flag; it's a raw passthrough, left as-is.)
 - Some endpoints require parameters that look optional. **Default them explicitly in the handler** rather than relying on the upstream call to fill them in.
 
 ## Known issues / fragile areas

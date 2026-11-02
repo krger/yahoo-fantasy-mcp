@@ -2325,9 +2325,13 @@ async def yahoo_get_players_batch(params: GetPlayersBatchInput) -> str:
         players_out: list = []
         if resolved:
             keys_csv = ",".join(resolved)
+            # League-scoped on purpose: league-specific player meta (notably
+            # is_undroppable) is only right in a league context — the bare
+            # players;player_keys= endpoint reports "0" for a player the
+            # league marks undroppable (raw-checked 2026-11-02).
             url = (
                 "https://fantasysports.yahooapis.com/fantasy/v2/"
-                f"players;player_keys={keys_csv}/stats?format=json"
+                f"league/{lg.league_key}/players;player_keys={keys_csv}/stats?format=json"
             )
             try:
                 # BUGFIX: do NOT pass params={"format":"json"} — URL already has it,
@@ -2344,6 +2348,11 @@ async def yahoo_get_players_batch(params: GetPlayersBatchInput) -> str:
 
             fc = data.get("fantasy_content", {}) if isinstance(data, dict) else {}
             players_node = fc.get("players", {}) if isinstance(fc, dict) else {}
+            # The league-scoped form nests the collection as league[1].players.
+            league_node = fc.get("league") if isinstance(fc, dict) else None
+            if (isinstance(league_node, list) and len(league_node) > 1
+                    and isinstance(league_node[1], dict)):
+                players_node = league_node[1].get("players", {})
             if isinstance(players_node, list):
                 # Some responses wrap players in a list
                 for item in players_node:
