@@ -141,6 +141,22 @@ def test_get_league_falls_back_when_discovery_empty(monkeypatch):
     assert lg._from_game_code == "mlb"
 
 
+def test_get_league_pinned_season_matches_whole_league_id(monkeypatch):
+    # With YAHOO_SEASON pinned and discovery down, the league is looked up
+    # among that season's ids. "12345" must not match "458.l.912345" (it used
+    # to: the check was a substring test).
+    import dataclasses
+
+    class _PinnedGame(_FakeGame):
+        def league_ids(self, year=None):
+            return ["458.l.912345", "458.l.123456", "458.l.12345"]
+
+    monkeypatch.setattr(server, "cfg", dataclasses.replace(server.cfg, season=2026))
+    monkeypatch.setattr(server, "_get_my_leagues", lambda sc: [])
+    monkeypatch.setattr(server.yfa, "Game", _PinnedGame)
+    assert server._get_league(None, None).league_key == "458.l.12345"
+
+
 # --- free-agent sort resolution -------------------------------------------
 
 def test_resolve_sort_named_passthrough():
