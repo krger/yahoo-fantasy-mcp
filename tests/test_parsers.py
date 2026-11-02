@@ -296,6 +296,36 @@ def test_parse_scoreboard_node_points_live_shape_winner_is_higher_scorer():
     assert m["stat_lines"] == []
 
 
+def test_points_matchup_surfaces_win_probability_in_both_framings():
+    # Live NFL team nodes carry win_probability; both framings surface it.
+    m = parsers._parse_matchup_node(
+        fx.MATCHUP_NODE_POINTS_LIVE, SCORING_PTS, "470.l.1529868.t.4")
+    assert m["team"]["win_probability"] == 0
+    assert m["opponent"]["win_probability"] == 1
+    m = parsers._parse_matchup_node(fx.MATCHUP_NODE_POINTS_LIVE, SCORING_PTS)
+    probs = {t["team_key"]: t["win_probability"] for t in m["teams"]}
+    assert probs == {"470.l.1529868.t.4": 0, "470.l.1529868.t.8": 1}
+
+
+def test_win_probability_coerced_from_string():
+    import copy
+    node = copy.deepcopy(fx.TEAM_NODE_PTS_LIVE_4)
+    node[1]["win_probability"] = "0.73"
+    assert parsers._extract_team_summary(node)["win_probability"] == 0.73
+    # Yahoo's float noise is rounded away (seen live 2026-11-02).
+    node[1]["win_probability"] = 0.010000000000000009
+    assert parsers._extract_team_summary(node)["win_probability"] == 0.01
+
+
+def test_matchup_omits_win_probability_when_yahoo_sends_none():
+    # The categories (MLB) league sends none -> no key at all, not a null.
+    m = parsers._parse_matchup_node(fx.MATCHUP_NODE, SCORING, "469.l.1.t.5")
+    assert "win_probability" not in m["team"]
+    assert "win_probability" not in m["opponent"]
+    m = parsers._parse_matchup_node(fx.MATCHUP_NODE_POINTS, SCORING_PTS)
+    assert all("win_probability" not in t for t in m["teams"])
+
+
 def test_parse_matchup_points_wrapper_unwraps_team_response():
     m = parsers._parse_matchup(fx.MATCHUP_RAW_POINTS, "470.l.1.t.3", SCORING_PTS)
     assert m["scoring"] == "points" and m["result"] == "win"
@@ -450,6 +480,54 @@ def test_flatten_raw_yahoo_player_extracts_owner_team():
     }
     # stats still parse alongside ownership
     assert flat["stats"] == {"SV": 14, "K": 31}
+
+
+# --- team waiver/transaction/draft fields (lg.teams() entries) -------------
+# Shaped like the live lg.teams() entries for NFL 1529868 / MLB 60467
+# (raw-checked 2026-11-02): ints arrive as ints, roster_adds as a coverage dict.
+
+_TEAM_NFL = {
+    "team_key": "470.l.1529868.t.4", "name": "Lincolnshire Poachers",
+    "waiver_priority": 7, "number_of_moves": 9, "number_of_trades": 0,
+    "roster_adds": {"coverage_type": "week", "coverage_value": 8, "value": "2"},
+    "draft_position": 2, "draft_grade": "A+", "has_draft_grade": 1,
+}
+
+
+def test_team_activity_normalizes_live_nfl_entry():
+    assert parsers._team_activity(_TEAM_NFL) == {
+        "waiver_priority": 7, "number_of_moves": 9, "number_of_trades": 0,
+        "draft_position": 2, "draft_grade": "A+",
+        "roster_adds": {"week": 8, "count": 2},
+    }
+
+
+def test_team_activity_clinched_flag_and_string_counts():
+    t = {"waiver_priority": "5", "number_of_moves": "43", "clinched_playoffs": 1}
+    out = parsers._team_activity(t)
+    assert out["waiver_priority"] == 5 and out["number_of_moves"] == 43
+    assert out["clinched_playoffs"] is True
+    assert parsers._team_activity({"clinched_playoffs": "0"})["clinched_playoffs"] is False
+
+
+def test_team_activity_omits_fields_yahoo_did_not_send():
+    # No FAAB / auction / grade in these leagues -> keys absent, not zero.
+    out = parsers._team_activity(_TEAM_NFL)
+    for k in ("faab_balance", "auction_budget_total", "auction_budget_spent",
+              "clinched_playoffs"):
+        assert k not in out
+    assert parsers._team_activity({}) == {}
+
+
+def test_team_activity_faab_and_non_weekly_adds():
+    out = parsers._team_activity({
+        "faab_balance": "87", "auction_budget_total": "200",
+        "roster_adds": {"coverage_type": "date", "coverage_value": "2026-11-01",
+                        "value": "1"},
+    })
+    assert out["faab_balance"] == 87 and out["auction_budget_total"] == 200
+    assert out["roster_adds"] == {"coverage_type": "date",
+                                  "coverage_value": "2026-11-01", "count": 1}
 
 
 # --- team-number resolution ------------------------------------------------

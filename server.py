@@ -73,6 +73,7 @@ from yahoo_parsers import (
     _parse_team_season_stats,
     _rank_season_categories,
     _resolve_team_key,
+    _team_activity,
     build_scoring_config,
 )
 
@@ -1056,6 +1057,9 @@ async def yahoo_get_scoreboard(params: GetScoreboardInput = GetScoreboardInput()
     """Get the league scoreboard showing all matchups for a given week.
 
     Shows each head-to-head matchup with team names and scores/categories.
+    Where Yahoo provides it (points leagues / football), each team also
+    carries 'win_probability' (0-1, Yahoo's live estimate); the key is
+    omitted for leagues where Yahoo sends none (categories leagues).
 
     Args:
         params (GetScoreboardInput): Validated input containing:
@@ -1519,7 +1523,10 @@ async def yahoo_get_matchup(params: GetMatchupInput = GetMatchupInput()) -> str:
     """Get detailed head-to-head matchup information for a specific team.
 
     Shows the matchup opponent, category-by-category breakdown,
-    and current score for the specified week.
+    and current score for the specified week. Where Yahoo provides it
+    (points leagues / football), 'team' and 'opponent' also carry
+    'win_probability' (0-1, Yahoo's live estimate); the key is omitted for
+    leagues where Yahoo sends none (categories leagues).
 
     Args:
         params (GetMatchupInput): Validated input containing:
@@ -1908,7 +1915,14 @@ async def yahoo_list_teams(params: ListTeamsInput = ListTeamsInput()) -> str:
     """List all teams in the league with their names, keys, and managers.
 
     Useful for finding team numbers to use with other tools like
-    yahoo_get_roster or yahoo_get_matchup.
+    yahoo_get_roster or yahoo_get_matchup. Each team also carries its
+    waiver and transaction state as Yahoo reports it: 'waiver_priority'
+    (1 = first claim), 'number_of_moves', 'number_of_trades', 'roster_adds'
+    ({week, count} — adds used in the current week, for leagues with a
+    weekly add limit), 'draft_position', and when applicable
+    'draft_grade', 'clinched_playoffs', 'faab_balance' (FAAB leagues) and
+    'auction_budget_total'/'auction_budget_spent' (auction drafts). A field
+    Yahoo doesn't send for the league is omitted, not zeroed.
 
     Args:
         params (ListTeamsInput): Validated input containing:
@@ -1937,6 +1951,7 @@ async def yahoo_list_teams(params: ListTeamsInput = ListTeamsInput()) -> str:
                 "name": tinfo.get("name", "Unknown"),
                 "manager": _team_manager_name(tinfo),
                 "is_your_team": str(tinfo.get("is_owned_by_current_login")) in ("1", "True"),
+                **_team_activity(tinfo),
             })
         # Sort by team_number for a stable, intuitive display order.
         team_list.sort(key=lambda t: (t["team_number"] is None, t["team_number"]))

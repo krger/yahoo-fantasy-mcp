@@ -207,7 +207,9 @@ SCOREBOARD_RAW_POINTS = {
 #   * winner_team_key / is_tied are populated at postevent, which is what
 #     drives `result` / `winner`.
 # Reconstructed from the connector's parsed output (real team keys, names and
-# totals), so it covers exactly the fields the parser consumes.
+# totals), so it covers exactly the fields the parser consumes. Each team node
+# also carries a `win_probability` (a bare 0-1 number, settled to 0 / 1 here);
+# values from the raw team/{key}/matchups response, re-checked 2026-11-02.
 
 TEAM_NODE_PTS_LIVE_4 = [
     [
@@ -218,6 +220,7 @@ TEAM_NODE_PTS_LIVE_4 = [
         {"is_owned_by_current_login": 1},
     ],
     {
+        "win_probability": 0,
         "team_points": {"coverage_type": "week", "week": "1", "total": "103.16"},
         "team_projected_points": {"coverage_type": "week", "week": "1", "total": "116.16"},
     },
@@ -232,6 +235,7 @@ TEAM_NODE_PTS_LIVE_8 = [
         {"is_owned_by_current_login": 0},
     ],
     {
+        "win_probability": 1,
         "team_points": {"coverage_type": "week", "week": "1", "total": "132.10"},
         "team_projected_points": {"coverage_type": "week", "week": "1", "total": "105.70"},
     },
