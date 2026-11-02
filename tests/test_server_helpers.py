@@ -177,6 +177,61 @@ def test_format_player_emits_pro_team_not_sport_specific_key():
     assert "mlb_team" not in out
 
 
+def test_format_player_flattens_raw_yahoo_player_meta():
+    # lg.player_details() / the batch endpoint hand over Yahoo's raw meta:
+    # name as a dict and positions as [{"position": ...}]. The player-lookup
+    # tools used to emit those verbatim, unlike every other tool.
+    out = server._format_player({
+        "name": {"full": "Patrick Mahomes", "first": "Patrick", "last": "Mahomes"},
+        "editorial_team_abbr": "KC",
+        "player_id": "30123",
+        "eligible_positions": [{"position": "QB"}, {"position": "SUPERFLEX"}],
+    })
+    assert out["name"] == "Patrick Mahomes"
+    assert out["eligible_positions"] == ["QB", "SUPERFLEX"]
+
+
+def test_format_player_keeps_already_flat_shape():
+    # roster/free-agent input is already flat and must pass through unchanged.
+    out = server._format_player({
+        "name": "Aaron Judge", "eligible_positions": ["OF", "Util"],
+    })
+    assert out["name"] == "Aaron Judge"
+    assert out["eligible_positions"] == ["OF", "Util"]
+
+
+def test_format_player_name_dict_without_full_falls_back():
+    assert server._format_player({"name": {}})["name"] == "Unknown"
+
+
+def test_player_notes_emits_name_as_string(monkeypatch):
+    # yahoo_get_player_notes builds its own player dict from the raw
+    # player resource, so it needs the same flattening as _format_player.
+    import json as _json
+    body = {"fantasy_content": {"player": [[
+        {"player_key": "470.p.30123"},
+        {"name": {"full": "Patrick Mahomes", "first": "Patrick"}},
+        {"editorial_team_abbr": "KC"},
+        {"status": "Q"},
+    ]]}}
+    resp = type("_Resp", (), {
+        "ok": True, "status_code": 200,
+        "headers": {"Content-Type": "application/json"},
+        "json": lambda self: body,
+    })()
+    sc = type("_SC", (), {})()
+    sc.session = type("_S", (), {"get": lambda self, url, params=None: resp})()
+    monkeypatch.setattr(server, "_get_oauth_session", lambda: sc)
+    monkeypatch.setattr(server, "_get_league", lambda sc, lid: None)
+    monkeypatch.setattr(server, "_resolve_player_key", lambda lg, n: "470.p.30123")
+    out = _json.loads(asyncio.run(server.yahoo_get_player_notes(
+        server.GetPlayerNotesInput(player_name="Mahomes")
+    )))
+    assert out["player"]["name"] == "Patrick Mahomes"
+    assert out["player"]["pro_team"] == "KC"
+    assert out["status"] == "Q"
+
+
 # --- error formatting ------------------------------------------------------
 
 def test_handle_error_classifies_auth():
