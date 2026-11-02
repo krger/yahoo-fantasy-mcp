@@ -164,8 +164,11 @@ breaking change.
 bare numeric id) to target a league other than the configured default
 (`cfg.league_id`). `_get_league(sc, league_id)` resolves it and validates any
 explicit override against the account's own leagues (`_get_my_leagues` →
-`_parse_my_leagues`, cached per process), raising a clear error for a league the
-token can't see; if discovery is unavailable it degrades permissive rather than
+`_parse_my_leagues`, cached per process — a miss is re-checked once against
+fresh discovery via `_refresh_my_leagues`, throttled to once a minute, so a
+league joined after startup resolves without a restart), raising a clear error
+for a league the token can't see; if discovery is unavailable it degrades
+permissive rather than
 blocking (constructing the key from `cfg.default_sport`, single-sport). Response
 payloads echo the *resolved* league via `_resolved_league_id(lg)`, and the
 scoring-config cache (`_scoring_configs`) is keyed by `league_key` so leagues

@@ -66,11 +66,68 @@ def test_get_league_prefers_discovered_key(monkeypatch):
 
 
 def test_get_league_rejects_unknown_override(monkeypatch):
-    # An explicit override outside the account's leagues is rejected.
+    # An explicit override outside the account's leagues is rejected (after
+    # the miss triggers a refresh; keep that refresh's globals test-local).
     monkeypatch.setattr(server, "_get_my_leagues", lambda sc: _MINE)
+    monkeypatch.setattr(server, "_my_leagues", None)
+    monkeypatch.setattr(server, "_my_leagues_refreshed_at", float("-inf"))
     monkeypatch.setattr(server.yfa, "Game", _FakeGame)
     with pytest.raises(ValueError):
         server._get_league(None, "99999")
+
+
+def _discovery_sequence(monkeypatch, *responses):
+    """Make _get_my_leagues honor the module cache like the real one, but
+    serve ``responses`` in order on each actual (uncached) fetch."""
+    calls = []
+    monkeypatch.setattr(server, "_my_leagues", None)
+    monkeypatch.setattr(server, "_my_leagues_refreshed_at", float("-inf"))
+
+    def fake(sc):
+        if server._my_leagues is not None:
+            return server._my_leagues
+        resp = responses[min(len(calls), len(responses) - 1)]
+        calls.append(resp)
+        if resp:
+            server._my_leagues = resp
+        return resp
+
+    monkeypatch.setattr(server, "_get_my_leagues", fake)
+    monkeypatch.setattr(server.yfa, "Game", _FakeGame)
+    return calls
+
+
+_NEW_LEAGUE = {
+    "league_id": "88888", "league_key": "475.l.88888",
+    "name": "MLB 2027", "season": "2027", "game_code": "mlb",
+}
+
+
+def test_get_league_refreshes_discovery_for_league_joined_after_startup(monkeypatch):
+    # The cache predates the new league; one fresh discovery finds it.
+    calls = _discovery_sequence(monkeypatch, _MINE, _MINE + [_NEW_LEAGUE])
+    server._get_league(None, "12345")  # warm the cache
+    lg = server._get_league(None, "88888")
+    assert lg.league_key == "475.l.88888"
+    assert len(calls) == 2
+
+
+def test_get_league_refresh_is_throttled(monkeypatch):
+    calls = _discovery_sequence(monkeypatch, _MINE)
+    for _ in range(3):
+        with pytest.raises(ValueError):
+            server._get_league(None, "99999")
+    assert len(calls) == 2  # initial fetch + one refresh, not one per call
+
+
+def test_refresh_keeps_previous_leagues_when_discovery_fails(monkeypatch):
+    # A failed refresh must not empty the cache (which would make validation
+    # permissive and let an unknown id through).
+    _discovery_sequence(monkeypatch, _MINE, [])
+    server._get_league(None, "12345")
+    with pytest.raises(ValueError):
+        server._get_league(None, "99999")
+    assert server._my_leagues == _MINE
 
 
 def test_get_league_falls_back_when_discovery_empty(monkeypatch):

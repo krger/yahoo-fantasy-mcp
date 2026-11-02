@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import sys
+import time
 from contextlib import asynccontextmanager
 from datetime import date, datetime
 from typing import Optional
@@ -171,6 +172,34 @@ def _get_my_leagues(sc: OAuth2) -> list[dict]:
     return _my_leagues
 
 
+# A league the account joins after startup (next season's league once it
+# drafts, a new private league) isn't in the cache, so an override for it is
+# re-checked against a fresh discovery before being rejected. Throttled so a
+# caller retrying a bogus id can't turn every request into a discovery call.
+_MY_LEAGUES_REFRESH_INTERVAL = 60.0  # seconds
+_my_leagues_refreshed_at = float("-inf")
+
+
+def _refresh_my_leagues(sc: OAuth2) -> list[dict]:
+    """Re-fetch the account's leagues, bypassing the cache (throttled).
+
+    Keeps the previous list if the fresh fetch fails, so a transient
+    discovery error can't flip validation into its permissive fallback.
+    """
+    global _my_leagues, _my_leagues_refreshed_at
+    now = time.monotonic()
+    if now - _my_leagues_refreshed_at < _MY_LEAGUES_REFRESH_INTERVAL:
+        return _my_leagues or []
+    _my_leagues_refreshed_at = now
+    previous = _my_leagues
+    _my_leagues = None
+    fresh = _get_my_leagues(sc)
+    if not fresh and previous:
+        _my_leagues = previous
+        return previous
+    return fresh
+
+
 def _season_for(sc: OAuth2, league_key: str) -> Optional[int]:
     """Return the season ``league_key`` belongs to, per Yahoo's own discovery.
 
@@ -218,15 +247,18 @@ def _get_league(sc: OAuth2, league_id: Optional[str] = None) -> yfa.League:
     target = league_id or cfg.league_id
     mine = _get_my_leagues(sc)
 
+    def _unknown(leagues):
+        return bool(leagues) and target not in {lg["league_id"] for lg in leagues}
+
     # Validate an explicit, non-default override against the account's leagues.
     # An empty ``mine`` means discovery is unavailable — degrade permissive
-    # rather than block, so the override still resolves.
-    if (
-        league_id is not None
-        and target != cfg.league_id
-        and mine
-        and target not in {lg["league_id"] for lg in mine}
-    ):
+    # rather than block, so the override still resolves. A miss against the
+    # cache is re-checked against fresh discovery first: the cache is
+    # per-process, and the account may have joined the league since startup.
+    is_override = league_id is not None and target != cfg.league_id
+    if is_override and _unknown(mine):
+        mine = _refresh_my_leagues(sc)
+    if is_override and _unknown(mine):
         available = ", ".join(
             f'{lg["league_id"]} ({lg["name"]})' for lg in mine
         )
