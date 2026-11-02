@@ -421,6 +421,43 @@ PLAYER_ENTRY_POINTS_WEEK = [
 ]
 
 
+# --- draft (live NFL 1529868 shapes, raw-checked 2026-11-02) ---------------
+# league/{key}/draftresults: picks as a "0".."N" + count collection of
+# {"draft_result": {...}}; real first three picks of the league's draft.
+DRAFT_RESULTS_RAW = {"fantasy_content": {"league": [
+    {"league_key": "470.l.1529868", "league_id": "1529868"},
+    {"draft_results": {
+        "0": {"draft_result": {"pick": 1, "round": 1,
+                               "team_key": "470.l.1529868.t.7", "player_key": "470.p.40059"}},
+        "1": {"draft_result": {"pick": 2, "round": 1,
+                               "team_key": "470.l.1529868.t.4", "player_key": "470.p.40055"}},
+        "2": {"draft_result": {"pick": 3, "round": 1,
+                               "team_key": "470.l.1529868.t.1", "player_key": "470.p.33393"}},
+        "count": 3,
+    }},
+]}}
+
+# A player from players;player_keys=…/draft_analysis: meta plus the
+# draft_analysis list of single-key dicts (Bijan Robinson's real figures).
+PLAYER_ENTRY_DRAFT_ANALYSIS = [
+    [
+        {"player_key": "470.p.40055"},
+        {"player_id": "40055"},
+        {"name": {"full": "Bijan Robinson", "first": "Bijan", "last": "Robinson"}},
+        {"editorial_team_abbr": "Atl"},
+        {"display_position": "RB"},
+        {"position_type": "O"},
+        {"eligible_positions": [{"position": "RB"}, {"position": "W/R/T"}]},
+    ],
+    {"draft_analysis": [
+        {"average_pick": "2.1"}, {"average_round": "1.0"},
+        {"average_cost": "70.9"}, {"percent_drafted": "1.00"},
+        {"preseason_average_pick": "2.1"}, {"preseason_average_round": "1.0"},
+        {"preseason_average_cost": "70.9"}, {"preseason_percent_drafted": "1.0"},
+    ]},
+]
+
+
 # --- raw league/{key}/settings response (for build_scoring_config) ----------
 # stat_categories.stats lists each category with display_name, sort_order
 # ("1" high-first, "0" low-first), and is_only_display_stat ("1" for

@@ -18,6 +18,7 @@ A read-only MCP server that gives Claude access to your Yahoo Fantasy Sports lea
 | `yahoo_get_matchup` | Detailed H2H matchup breakdown, with Yahoo's win probability where it provides one |
 | `yahoo_get_roster` | Any team's roster (yours or an opponent's), optionally enriched with season and weekly stats — and per-player fantasy points in a points league |
 | `yahoo_list_teams` | List all teams (useful for finding team numbers), with waiver priority, move/trade counts, and draft position/grade |
+| `yahoo_get_draft_results` | Every draft pick in order, with Yahoo-wide average draft position and auction value per player |
 | `yahoo_list_my_leagues` | List the leagues your Yahoo account is in (for the `league_id` override) |
 
 **Multiple leagues?** `YAHOO_LEAGUE_ID` sets your default league, but every tool also accepts an optional `league_id` argument to target another league your account belongs to. Call `yahoo_list_my_leagues` to see the available ids; an id outside your account's leagues is rejected.

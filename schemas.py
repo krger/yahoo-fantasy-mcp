@@ -289,6 +289,20 @@ class GetTransactionsInput(LeagueScopedInput):
     )
 
 
+class GetDraftResultsInput(LeagueScopedInput):
+    """Input for retrieving the league's draft results."""
+
+    team_number: Optional[int] = Field(
+        default=None,
+        description=(
+            "Limit to one team's picks (1-based team number). "
+            "If omitted, returns every pick in the draft."
+        ),
+        ge=1,
+        le=30,
+    )
+
+
 class GetPlayersBatchInput(LeagueScopedInput):
     """Input for batch player lookup."""
 

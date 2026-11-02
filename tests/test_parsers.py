@@ -482,6 +482,59 @@ def test_flatten_raw_yahoo_player_extracts_owner_team():
     assert flat["stats"] == {"SV": 14, "K": 31}
 
 
+# --- draft results + draft analysis ----------------------------------------
+
+def test_parse_draft_results_live_shape_in_pick_order():
+    picks = parsers._parse_draft_results(fx.DRAFT_RESULTS_RAW)
+    assert [p["pick"] for p in picks] == [1, 2, 3]
+    assert picks[1] == {"pick": 2, "round": 1, "team_key": "470.l.1529868.t.4",
+                        "player_key": "470.p.40055"}
+    assert all("cost" not in p for p in picks)  # not an auction draft
+
+
+def test_parse_draft_results_sorts_and_keeps_auction_cost():
+    raw = {"fantasy_content": {"league": [{}, {"draft_results": {
+        "1": {"draft_result": {"pick": "2", "round": "1", "team_key": "t.2",
+                               "player_key": "p.2", "cost": "41"}},
+        "0": {"draft_result": {"pick": "1", "round": "1", "team_key": "t.1",
+                               "player_key": "p.1", "cost": "55"}},
+        "count": 2,
+    }}]}}
+    picks = parsers._parse_draft_results(raw)
+    assert [p["pick"] for p in picks] == [1, 2]
+    assert [p["cost"] for p in picks] == [55, 41]
+
+
+def test_parse_draft_results_predraft_and_empty_shapes():
+    # Pre-draft picks can lack a player; an empty collection can be a bare [].
+    raw = {"fantasy_content": {"league": [{}, {"draft_results": {
+        "0": {"draft_result": {"pick": 1, "round": 1, "team_key": "t.1"}},
+        "count": 1,
+    }}]}}
+    assert parsers._parse_draft_results(raw)[0]["player_key"] is None
+    empty = {"fantasy_content": {"league": [{}, {"draft_results": []}]}}
+    assert parsers._parse_draft_results(empty) == []
+    assert parsers._parse_draft_results({}) == []
+
+
+def test_flatten_raw_yahoo_player_draft_analysis():
+    flat = parsers._flatten_raw_yahoo_player(fx.PLAYER_ENTRY_DRAFT_ANALYSIS, SCORING_PTS)
+    assert flat["name"] == "Bijan Robinson"
+    assert flat["draft_analysis"] == {
+        "average_pick": 2.1, "average_round": 1.0, "average_cost": 70.9,
+        "percent_drafted": 1.0, "preseason_average_pick": 2.1,
+        "preseason_average_round": 1.0, "preseason_average_cost": 70.9,
+        "preseason_percent_drafted": 1.0,
+    }
+
+
+def test_flatten_raw_yahoo_player_draft_analysis_drops_dashes():
+    entry = [fx.PLAYER_ENTRY_DRAFT_ANALYSIS[0],
+             {"draft_analysis": [{"average_pick": "-"}, {"percent_drafted": "0.00"}]}]
+    flat = parsers._flatten_raw_yahoo_player(entry, SCORING_PTS)
+    assert flat["draft_analysis"] == {"percent_drafted": 0.0}
+
+
 # --- team waiver/transaction/draft fields (lg.teams() entries) -------------
 # Shaped like the live lg.teams() entries for NFL 1529868 / MLB 60467
 # (raw-checked 2026-11-02): ints arrive as ints, roster_adds as a coverage dict.

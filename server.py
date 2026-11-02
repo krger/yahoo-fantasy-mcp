@@ -44,6 +44,7 @@ from config import load_config
 # Pydantic input models (the MCP tools' input contract) live in schemas.py;
 # import the ones used as handler parameter annotations.
 from schemas import (
+    GetDraftResultsInput,
     GetLeagueSettingsInput,
     GetMatchupInput,
     GetPlayerNotesInput,
@@ -66,6 +67,7 @@ from yahoo_parsers import (
     NoMatchupError,
     ScoringConfig,
     _flatten_raw_yahoo_player,
+    _parse_draft_results,
     _parse_matchup,
     _parse_my_leagues,
     _parse_scoreboard,
@@ -573,6 +575,52 @@ def _fetch_free_agents_raw(
     return collected[:requested]
 
 
+def _fetch_players_by_keys(
+    sc: OAuth2,
+    league_key: str,
+    player_keys: list[str],
+    scoring: ScoringConfig,
+    suffix: str,
+) -> dict[str, dict]:
+    """Fetch specific players with a sub-resource, keyed by player_id.
+
+    GETs ``league/{key}/players;player_keys=…{suffix}`` (e.g. ``;out=stats``,
+    ``/draft_analysis``) in chunks of Yahoo's 25-per-request cap and parses
+    each entry with ``_flatten_raw_yahoo_player`` — the same shape the
+    free-agent path reads. A failed chunk is logged and skipped, so callers
+    get whatever did come back. Returns ``{player_id: flat_player}``.
+    """
+    out: dict[str, dict] = {}
+    PAGE = 25
+    for i in range(0, len(player_keys), PAGE):
+        chunk = player_keys[i:i + PAGE]
+        keys_csv = quote(",".join(chunk), safe=",")
+        url = (
+            f"https://fantasysports.yahooapis.com/fantasy/v2/"
+            f"league/{league_key}/players;player_keys={keys_csv}{suffix}?format=json"
+        )
+        resp = sc.session.get(url)
+        if resp.status_code != 200:
+            logger.warning(
+                f"Players fetch ({suffix}) returned {resp.status_code}: {resp.text[:200]}"
+            )
+            continue
+        league_data = resp.json().get("fantasy_content", {}).get("league", [])
+        if not isinstance(league_data, list) or len(league_data) < 2:
+            continue
+        players_block = league_data[1].get("players")
+        if not isinstance(players_block, dict):
+            continue
+        for key, entry in players_block.items():
+            if key == "count" or not isinstance(entry, dict) or "player" not in entry:
+                continue
+            flat = _flatten_raw_yahoo_player(entry["player"], scoring)
+            pid = flat.get("player_id")
+            if pid is not None:
+                out[str(pid)] = flat
+    return out
+
+
 def _fetch_player_stats_by_keys(
     sc: OAuth2,
     league_key: str,
@@ -584,11 +632,8 @@ def _fetch_player_stats_by_keys(
 ) -> dict[str, dict]:
     """Fetch stats for specific players, keyed by player_id.
 
-    Uses the league players collection with an explicit ``player_keys`` filter
-    — the same response shape ``_flatten_raw_yahoo_player`` already parses for
-    free agents. Chunked to Yahoo's 25-per-request cap. Returns
-    ``{player_id: flat_player}`` (the flattened dict, carrying ``stats`` and,
-    in a points league, ``points``) for players that had stats.
+    Returns ``{player_id: flat_player}`` (the flattened dict, carrying
+    ``stats`` and, in a points league, ``points``) for players that had stats.
 
     The coverage is the season (``;out=stats``) by default, one scoring
     ``week`` (``/stats;type=week;week=N``), or one ``day``
@@ -603,36 +648,8 @@ def _fetch_player_stats_by_keys(
         coverage = f"/stats;type=date;date={day.isoformat()}"
     else:
         coverage = ";out=stats"
-    out: dict[str, dict] = {}
-    PAGE = 25
-    for i in range(0, len(player_keys), PAGE):
-        chunk = player_keys[i:i + PAGE]
-        keys_csv = quote(",".join(chunk), safe=",")
-        resource = f"players;player_keys={keys_csv}{coverage}"
-        url = (
-            f"https://fantasysports.yahooapis.com/fantasy/v2/"
-            f"league/{league_key}/{resource}?format=json"
-        )
-        resp = sc.session.get(url)
-        if resp.status_code != 200:
-            logger.warning(
-                f"Roster stats fetch returned {resp.status_code}: {resp.text[:200]}"
-            )
-            continue
-        league_data = resp.json().get("fantasy_content", {}).get("league", [])
-        if not isinstance(league_data, list) or len(league_data) < 2:
-            continue
-        players_block = league_data[1].get("players")
-        if not isinstance(players_block, dict):
-            continue
-        for key, entry in players_block.items():
-            if key == "count" or not isinstance(entry, dict) or "player" not in entry:
-                continue
-            flat = _flatten_raw_yahoo_player(entry["player"], scoring)
-            pid = flat.get("player_id")
-            if pid is not None and flat.get("stats"):
-                out[str(pid)] = flat
-    return out
+    players = _fetch_players_by_keys(sc, league_key, player_keys, scoring, coverage)
+    return {pid: flat for pid, flat in players.items() if flat.get("stats")}
 
 
 def _get_player_ownership(sc: OAuth2, league_key: str, player_id) -> dict:
@@ -1877,6 +1894,102 @@ async def yahoo_get_transactions(
             },
             "count": len(transactions),
             "transactions": transactions,
+        }, indent=2, default=str)
+
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool(
+    name="yahoo_get_draft_results",
+    annotations={
+        "title": "Get Draft Results",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def yahoo_get_draft_results(
+    params: GetDraftResultsInput = GetDraftResultsInput(),
+) -> str:
+    """Get the league's draft: every pick in order, with Yahoo's draft analysis.
+
+    Each pick has 'pick' (overall number), 'round', 'team_key', 'team_name',
+    'cost' (auction drafts only), and 'player' (name, positions, pro_team,
+    player_id). Each player also carries 'draft_analysis' — **Yahoo-wide**
+    figures across all Yahoo leagues, not this league's draft: average_pick
+    (ADP), average_round, average_cost (auction value), percent_drafted,
+    plus preseason_* versions of each. Comparing a pick's 'pick' with its
+    average_pick shows reaches and steals. Before the draft, picks may have
+    no player yet ('player': null). Pass team_number for one team's picks.
+
+    Args:
+        params (GetDraftResultsInput): Validated input containing:
+            - team_number (Optional[int]): One team's picks, or None for all.
+            - league_id (Optional[str]): League override, or None for default.
+
+    Returns:
+        str: JSON object with the draft's picks.
+    """
+    try:
+        sc = _get_oauth_session()
+        lg = _get_league(sc, params.league_id)
+        teams = lg.teams()
+
+        team_key = None
+        if params.team_number is not None:
+            team_key = _resolve_team_key(lg, teams, params.team_number)
+            if team_key is None:
+                return (
+                    f"Error: Team number {params.team_number} not found. "
+                    f"League has {len(teams)} teams (valid range: 1-{len(teams)})."
+                )
+
+        url = (
+            "https://fantasysports.yahooapis.com/fantasy/v2/"
+            f"league/{lg.league_key}/draftresults?format=json"
+        )
+        resp = sc.session.get(url)
+        resp.raise_for_status()
+        picks = _parse_draft_results(resp.json())
+        if team_key is not None:
+            picks = [p for p in picks if p["team_key"] == team_key]
+
+        # One batched call per 25 players returns each player's meta plus
+        # the draft_analysis sub-resource.
+        pkeys = [p["player_key"] for p in picks if p["player_key"]]
+        players = _fetch_players_by_keys(
+            sc, lg.league_key, pkeys, _get_scoring_config(sc, lg), "/draft_analysis"
+        )
+
+        out = []
+        for p in picks:
+            entry = {
+                "pick": p["pick"],
+                "round": p["round"],
+                "team_key": p["team_key"],
+                "team_name": teams.get(p["team_key"], {}).get("name"),
+            }
+            if "cost" in p:
+                entry["cost"] = p["cost"]
+            player = None
+            if p["player_key"]:
+                flat = players.get(p["player_key"].rsplit(".p.", 1)[-1])
+                if flat:
+                    player = _format_player(flat)
+                    if flat.get("draft_analysis"):
+                        player["draft_analysis"] = flat["draft_analysis"]
+                else:
+                    player = {"player_key": p["player_key"]}  # lookup failed
+            entry["player"] = player
+            out.append(entry)
+
+        return json.dumps({
+            "league_id": _resolved_league_id(lg),
+            "team_key": team_key,
+            "pick_count": len(out),
+            "picks": out,
         }, indent=2, default=str)
 
     except Exception as e:

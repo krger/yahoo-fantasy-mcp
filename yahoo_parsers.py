@@ -214,6 +214,22 @@ def _flatten_raw_yahoo_player(player_entry: list, scoring: ScoringConfig) -> dic
         if isinstance(pp, dict) and pp.get("total") is not None:
             flat["points"] = _to_number(pp["total"])
 
+        # draft_analysis (the /draft_analysis sub-resource) is a list of
+        # single-key dicts: average_pick/round/cost, percent_drafted, and
+        # preseason_* twins. Yahoo-wide figures, not this league's draft.
+        # "-" (never drafted anywhere) is dropped rather than kept as a string.
+        da = extra.get("draft_analysis")
+        if isinstance(da, list):
+            analysis = {}
+            for item in da:
+                if not isinstance(item, dict):
+                    continue
+                for k, v in item.items():
+                    if v not in (None, "", "-"):
+                        analysis[k] = _to_number(v)
+            if analysis:
+                flat["draft_analysis"] = analysis
+
         # ownership (present when requested via ;out=ownership) carries the
         # fantasy team that holds the player — the distinguishing field for
         # taken-players listings (free agents have no owner_team_key).
@@ -624,6 +640,42 @@ def _parse_standings(standings: list, season_categories: Optional[dict] = None) 
             row["categories"] = season_categories.get(team_key, [])
         out.append(row)
     return out
+
+
+def _parse_draft_results(raw: dict) -> list[dict]:
+    """Flatten ``league/{key}/draftresults`` into a pick-ordered list.
+
+    Yahoo nests picks as ``league[1].draft_results`` — a ``"0".."N"`` +
+    ``count`` collection of ``{"draft_result": {pick, round, team_key,
+    player_key[, cost]}}`` (live NFL/MLB shape, 2026-11-02). Before a draft
+    the collection can be empty (or a bare ``[]``) and picks can lack a
+    ``player_key``; such picks are kept with ``player_key: None`` so the draft
+    order still shows. ``cost`` appears only in auction drafts.
+    """
+    league = raw.get("fantasy_content", {}).get("league") if isinstance(raw, dict) else None
+    if not isinstance(league, list) or len(league) < 2 or not isinstance(league[1], dict):
+        return []
+    coll = league[1].get("draft_results")
+    if not isinstance(coll, dict):
+        return []
+    picks = []
+    for key, val in coll.items():
+        if key == "count" or not isinstance(val, dict):
+            continue
+        dr = val.get("draft_result")
+        if not isinstance(dr, dict):
+            continue
+        pick = {
+            "pick": _to_int(dr.get("pick")),
+            "round": _to_int(dr.get("round")),
+            "team_key": dr.get("team_key"),
+            "player_key": dr.get("player_key") or None,
+        }
+        if dr.get("cost") not in (None, ""):
+            pick["cost"] = _to_number(dr["cost"])
+        picks.append(pick)
+    picks.sort(key=lambda p: p["pick"] if isinstance(p["pick"], int) else 10**9)
+    return picks
 
 
 def _team_activity(tinfo: dict) -> dict:

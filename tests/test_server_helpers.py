@@ -417,6 +417,7 @@ _FULLY_OPTIONAL_TOOLS = {
     "yahoo_get_matchup",
     "yahoo_get_transactions",
     "yahoo_list_teams",
+    "yahoo_get_draft_results",
     "yahoo_list_my_leagues",  # takes no params argument at all
 }
 
@@ -880,6 +881,75 @@ def test_roster_without_include_stats_makes_no_stats_calls(monkeypatch):
     assert urls == []
     assert "points" not in res["players"][0]
     assert "stats_week" not in res
+
+
+# --- draft results ----------------------------------------------------------
+
+
+class _DraftSession:
+    """Serves draftresults and the players/draft_analysis lookup; records URLs."""
+
+    def __init__(self, draft, players):
+        self.draft, self.players, self.urls = draft, players, []
+
+    def get(self, url):
+        self.urls.append(url)
+        body = self.draft if "/draftresults" in url else self.players
+        resp = type("_Resp", (), {"status_code": 200, "json": lambda self: body})()
+        resp.raise_for_status = lambda: None
+        return resp
+
+
+def _run_draft(monkeypatch, **kw):
+    import json as _json
+
+    from tests import fixtures as fx
+    from yahoo_parsers import build_scoring_config
+
+    session = _DraftSession(
+        fx.DRAFT_RESULTS_RAW, _players_response([fx.PLAYER_ENTRY_DRAFT_ANALYSIS])
+    )
+    sc = type("_SC", (), {"session": session})()
+    lk = "470.l.1529868"
+    lg = type("_LG", (), {"league_key": lk})()
+    lg.teams = lambda: {f"{lk}.t.{n}": {"name": f"Team {n}"} for n in range(1, 11)}
+    monkeypatch.setattr(server, "_get_oauth_session", lambda: sc)
+    monkeypatch.setattr(server, "_get_league", lambda sc, lid: lg)
+    monkeypatch.setattr(server, "_resolved_league_id", lambda lg: "1529868")
+    monkeypatch.setattr(server, "_get_scoring_config",
+                        lambda sc, lg: build_scoring_config(fx.SETTINGS_RAW_POINTS))
+    out = asyncio.run(server.yahoo_get_draft_results(server.GetDraftResultsInput(**kw)))
+    if out.startswith("Error:"):
+        return out, session.urls
+    return _json.loads(out), session.urls
+
+
+def test_draft_results_merges_players_and_analysis(monkeypatch):
+    res, urls = _run_draft(monkeypatch)
+    assert res["pick_count"] == 3
+    assert [p["pick"] for p in res["picks"]] == [1, 2, 3]
+    bijan = res["picks"][1]
+    assert bijan["team_name"] == "Team 4"
+    assert bijan["player"]["name"] == "Bijan Robinson"
+    assert bijan["player"]["pro_team"] == "Atl"
+    assert bijan["player"]["draft_analysis"]["average_pick"] == 2.1
+    # all three keys fetched in one batched /draft_analysis call
+    assert sum("/draft_analysis" in u for u in urls) == 1
+    # a player the lookup didn't return still shows its key, not a crash
+    assert res["picks"][0]["player"] == {"player_key": "470.p.40059"}
+
+
+def test_draft_results_team_filter(monkeypatch):
+    res, _ = _run_draft(monkeypatch, team_number=4)
+    assert res["team_key"] == "470.l.1529868.t.4"
+    assert [p["pick"] for p in res["picks"]] == [2]
+
+
+def test_draft_results_unknown_team_is_an_error(monkeypatch):
+    monkeypatch.setattr(server, "_resolve_team_key", lambda lg, teams, n: None)
+    res, urls = _run_draft(monkeypatch, team_number=30)
+    assert res.startswith("Error: Team number 30 not found")
+    assert urls == []  # rejected before any Yahoo call
 
 
 # --- Host validation on the built ASGI app --------------------------------
