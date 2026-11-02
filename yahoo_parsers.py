@@ -436,6 +436,25 @@ def _parse_matchup_node(
             "teams": [_team_info(a), _team_info(b)], "categories": categories}
 
 
+def _overall_result(matchup: dict, me_key: str, opp_key: str) -> Optional[str]:
+    """The whole matchup's result from ``me_key``'s side: ``win``/``loss``/
+    ``tie``, or ``None`` while undecided (in progress / not yet played).
+
+    Read from the matchup-level ``winner_team_key`` / ``is_tied``, which Yahoo
+    sets once a week settles in **both** scoring models — points and
+    categories alike (live-checked 2026-11-02: MLB week 14 settled as
+    ``is_tied: 1`` with no winner key).
+    """
+    if _is_set(matchup.get("is_tied")):
+        return "tie"
+    winner = matchup.get("winner_team_key")
+    if winner == me_key:
+        return "win"
+    if winner == opp_key:
+        return "loss"
+    return None
+
+
 def _points_matchup_node(
     matchup: dict,
     summaries: list,
@@ -470,14 +489,7 @@ def _points_matchup_node(
         opp = next((s for s in summaries if s["team_key"] != perspective_team_key), None)
         if me is None or opp is None:
             raise ValueError("Could not resolve both teams in matchup")
-        if is_tied:
-            result = "tie"
-        elif winner_key == me["team_key"]:
-            result = "win"
-        elif winner_key == opp["team_key"]:
-            result = "loss"
-        else:
-            result = None  # not yet decided (in-progress week with no winner)
+        result = _overall_result(matchup, me["team_key"], opp["team_key"])
         stat_lines = [
             {
                 "stat": scoring.label(sid),
@@ -543,6 +555,62 @@ def _parse_matchup(raw: dict, my_team_key: str, scoring: ScoringConfig) -> dict:
     if not matchup:
         raise NoMatchupError("No matchup for this team in the requested week")
     return _parse_matchup_node(matchup, scoring, my_team_key)
+
+
+def _parse_team_schedule(raw: dict, my_team_key: str, scoring: ScoringConfig) -> list:
+    """Turn ``team/{key}/matchups`` (every week at once) into one compact
+    entry per scheduled week, from ``my_team_key``'s side.
+
+    Each node goes through ``_parse_matchup_node`` so the ``team`` /
+    ``opponent`` objects match ``yahoo_get_matchup`` exactly (``points`` /
+    ``projected_points`` / ``win_probability`` in a points league,
+    ``category_points`` in a categories league); the per-category and
+    stat-line detail is dropped to keep a full season compact. ``result``
+    is the whole week's outcome in either scoring model (``_overall_result``).
+    Yahoo's ``matchup_grades`` (seen on NFL weeks) become ``grades``.
+
+    A week missing from the list is a real gap, not a parse failure: a
+    playoff bye (live MLB 60467 skips week 24 for the #1 seed), or playoff
+    weeks Yahoo hasn't scheduled yet (live NFL lists weeks 1-15 only, before
+    seeding). A node whose teams can't be resolved is skipped, not fatal.
+    """
+    team = raw.get("fantasy_content", {}).get("team") if isinstance(raw, dict) else None
+    if not isinstance(team, list) or len(team) < 2 or not isinstance(team[1], dict):
+        return []
+    coll = team[1].get("matchups")
+    if not isinstance(coll, dict):
+        return []
+    weeks = []
+    for key, val in coll.items():
+        if key == "count" or not isinstance(val, dict):
+            continue
+        node = val.get("matchup")
+        if not isinstance(node, dict):
+            continue
+        try:
+            parsed = _parse_matchup_node(node, scoring, my_team_key)
+        except ValueError:
+            continue
+        entry = {k: parsed[k] for k in ("week", "week_start", "week_end", "status", "is_playoffs")}
+        entry["is_consolation"] = _is_set(node.get("is_consolation"))
+        entry["team"] = parsed["team"]
+        entry["opponent"] = parsed["opponent"]
+        entry["result"] = _overall_result(
+            node, parsed["team"]["team_key"], parsed["opponent"]["team_key"]
+        )
+        grades = {}
+        for g in node.get("matchup_grades") or []:
+            mg = g.get("matchup_grade", {}) if isinstance(g, dict) else {}
+            side = ("team" if mg.get("team_key") == parsed["team"]["team_key"]
+                    else "opponent" if mg.get("team_key") == parsed["opponent"]["team_key"]
+                    else None)
+            if side and mg.get("grade"):
+                grades[side] = mg["grade"]
+        if grades:
+            entry["grades"] = grades
+        weeks.append(entry)
+    weeks.sort(key=lambda w: w["week"] if isinstance(w["week"], int) else 10**9)
+    return weeks
 
 
 def _parse_scoreboard(raw: dict, scoring: ScoringConfig) -> list:

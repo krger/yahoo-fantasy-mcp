@@ -55,6 +55,7 @@ from schemas import (
     GetScoreboardInput,
     GetStandingsInput,
     GetTakenPlayersInput,
+    GetTeamScheduleInput,
     GetTransactionsInput,
     GetWaiversInput,
     ListTeamsInput,
@@ -72,6 +73,7 @@ from yahoo_parsers import (
     _parse_my_leagues,
     _parse_scoreboard,
     _parse_standings,
+    _parse_team_schedule,
     _parse_team_season_stats,
     _rank_season_categories,
     _resolve_team_key,
@@ -1920,6 +1922,76 @@ async def yahoo_get_transactions(
             },
             "count": len(transactions),
             "transactions": transactions,
+        }, indent=2, default=str)
+
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool(
+    name="yahoo_get_team_schedule",
+    annotations={
+        "title": "Get Team Schedule",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def yahoo_get_team_schedule(
+    params: GetTeamScheduleInput = GetTeamScheduleInput(),
+) -> str:
+    """Get a team's whole season of head-to-head matchups in one call.
+
+    One entry per scheduled week — past, current and future — with 'week',
+    'week_start'/'week_end', 'status' (preevent/midevent/postevent),
+    'is_playoffs', 'is_consolation', the 'team' and 'opponent' (same shape
+    as yahoo_get_matchup: 'points', 'projected_points' and, where Yahoo
+    provides it, 'win_probability' in a points league; 'category_points' in
+    a categories league), the week's overall 'result' (win/loss/tie, null
+    until decided), and Yahoo's matchup 'grades' when present. Use it for
+    strength of schedule, upcoming opponents, or a season recap; for one
+    week's category-by-category detail use yahoo_get_matchup.
+
+    A week missing from the list is a real gap: a playoff bye, or playoff
+    weeks Yahoo hasn't scheduled until seeding is set.
+
+    Args:
+        params (GetTeamScheduleInput): Validated input containing:
+            - team_number (Optional[int]): Team number, or None for own team.
+            - league_id (Optional[str]): League override, or None for default.
+
+    Returns:
+        str: JSON object with the team's season schedule.
+    """
+    try:
+        sc = _get_oauth_session()
+        lg = _get_league(sc, params.league_id)
+        teams = lg.teams()
+
+        team_key = _resolve_team_key(lg, teams, params.team_number)
+        if team_key is None:
+            return (
+                f"Error: Team number {params.team_number} not found. "
+                f"League has {len(teams)} teams (valid range: 1-{len(teams)})."
+            )
+
+        url = (
+            "https://fantasysports.yahooapis.com/fantasy/v2/"
+            f"team/{team_key}/matchups?format=json"
+        )
+        resp = sc.session.get(url)
+        resp.raise_for_status()
+        scoring = _get_scoring_config(sc, lg)
+        weeks = _parse_team_schedule(resp.json(), team_key, scoring)
+
+        return json.dumps({
+            "league_id": _resolved_league_id(lg),
+            "team_name": teams.get(team_key, {}).get("name"),
+            "team_key": team_key,
+            "scoring": "points" if scoring.is_points_league else "categories",
+            "week_count": len(weeks),
+            "weeks": weeks,
         }, indent=2, default=str)
 
     except Exception as e:

@@ -291,6 +291,20 @@ class GetTransactionsInput(LeagueScopedInput):
     )
 
 
+class GetTeamScheduleInput(LeagueScopedInput):
+    """Input for a team's full-season schedule of matchups."""
+
+    team_number: Optional[int] = Field(
+        default=None,
+        description=(
+            "Team number (1-based). If omitted, returns the authenticated "
+            "user's team schedule."
+        ),
+        ge=1,
+        le=30,
+    )
+
+
 class GetDraftResultsInput(LeagueScopedInput):
     """Input for retrieving the league's draft results."""
 

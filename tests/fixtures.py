@@ -434,6 +434,67 @@ PLAYER_ENTRY_TRENDING = [
 ]
 
 
+# --- full-season team/{key}/matchups (raw-checked 2026-11-02) --------------
+# Every week in one "0".."N" + count collection of {"matchup": node}.
+# Points (NFL 1529868, team 4): settled week 1 carries matchup_grades and
+# is_consolation; future week 15 is preevent with real projections and win
+# probabilities but zero points. Values are the live response's.
+
+def _team_node_pts(team_key, name, week, wp, pts, proj):
+    return [
+        [{"team_key": team_key}, {"team_id": team_key.rsplit(".", 1)[1]},
+         {"name": name}, [], {"is_owned_by_current_login": int(team_key.endswith(".t.4"))}],
+        {
+            "win_probability": wp,
+            "team_points": {"coverage_type": "week", "week": week, "total": pts},
+            "team_projected_points": {"coverage_type": "week", "week": week, "total": proj},
+        },
+    ]
+
+
+SCHEDULE_RAW_POINTS = {"fantasy_content": {"team": [
+    [{"team_key": "470.l.1529868.t.4"}, {"name": "Lincolnshire Poachers"}],
+    {"matchups": {
+        # Yahoo's own order is by week; keyed out of order here so the
+        # parser's sort is exercised.
+        "1": {"matchup": {
+            "week": 15, "week_start": "2026-12-15", "week_end": "2026-12-21",
+            "status": "preevent", "is_playoffs": "0", "is_consolation": "0",
+            "0": {"teams": {"count": 2,
+                "0": {"team": _team_node_pts("470.l.1529868.t.4", "Lincolnshire Poachers",
+                                             15, 0.49, "0.00", "93.74")},
+                "1": {"team": _team_node_pts("470.l.1529868.t.10", "Quick Snap Robert",
+                                             15, 0.51, "0.00", "95.07")},
+            }},
+        }},
+        "0": {"matchup": {
+            **MATCHUP_NODE_POINTS_LIVE,
+            "is_consolation": "0",
+            "matchup_grades": [
+                {"matchup_grade": {"team_key": "470.l.1529868.t.4", "grade": "D+"}},
+                {"matchup_grade": {"team_key": "470.l.1529868.t.8", "grade": "A+"}},
+            ],
+        }},
+        "count": 2,
+    }},
+]}}
+
+# Categories (shape of MLB 60467): matchup nodes carry an overall
+# winner_team_key / is_tied too once settled. Week 10 is won by team 5; a
+# tied week mirrors live week 14 (is_tied 1, no winner key, 5-5).
+SCHEDULE_RAW_CATEGORIES = {"fantasy_content": {"team": [
+    [{"team_key": "469.l.1.t.5"}, {"name": "Poachers"}],
+    {"matchups": {
+        "0": {"matchup": {**MATCHUP_NODE, "status": "postevent", "is_tied": 0,
+                          "winner_team_key": "469.l.1.t.5"}},
+        "1": {"matchup": {**MATCHUP_NODE, "week": "14", "status": "postevent",
+                          "is_tied": 1}},
+        "2": {"matchup": {"week": "15", "0": {"teams": {"count": 0}}}},  # unresolvable
+        "count": 3,
+    }},
+]}}
+
+
 # --- draft (live NFL 1529868 shapes, raw-checked 2026-11-02) ---------------
 # league/{key}/draftresults: picks as a "0".."N" + count collection of
 # {"draft_result": {...}}; real first three picks of the league's draft.
