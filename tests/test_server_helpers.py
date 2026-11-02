@@ -481,3 +481,43 @@ def test_build_app_without_config_keeps_stock_loopback_only(
     monkeypatch.setattr(server, "_transport_security", None)
     assert _status_for_host("localhost") == 421
     assert _status_for_host("127.0.0.1:8000") == 200
+
+
+# --- app lifespan -------------------------------------------------------------
+#
+# Only setup is guarded. With the yield inside the try, an exception thrown
+# into the running lifespan was caught and answered with a second yield, which
+# asynccontextmanager reports as "generator didn't stop after athrow()" --
+# hiding the real error.
+
+
+async def _raise_inside_lifespan(exc):
+    async with server.app_lifespan(None) as state:
+        assert state is not None
+        raise exc
+
+
+@pytest.mark.parametrize("init_ok", [True, False])
+def test_lifespan_propagates_errors_raised_while_running(monkeypatch, init_ok):
+    if init_ok:
+        monkeypatch.setattr(server, "_get_oauth_session", lambda: object())
+        monkeypatch.setattr(server, "_get_league", lambda sc, lid: object())
+    else:
+        def _fail():
+            raise RuntimeError("offline test: no Yahoo session")
+        monkeypatch.setattr(server, "_get_oauth_session", _fail)
+    with pytest.raises(KeyError, match="while serving"):
+        asyncio.run(_raise_inside_lifespan(KeyError("while serving")))
+
+
+def test_lifespan_degrades_when_setup_fails(monkeypatch):
+    def _fail():
+        raise RuntimeError("no creds")
+    monkeypatch.setattr(server, "_get_oauth_session", _fail)
+
+    async def _enter():
+        async with server.app_lifespan(None) as state:
+            return state
+
+    state = asyncio.run(_enter())
+    assert state["sc"] is None and state["init_error"] == "no creds"
