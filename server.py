@@ -746,15 +746,24 @@ def _handle_error(e: Exception) -> str:
 
 @asynccontextmanager
 async def app_lifespan(server):
-    """Initialize the Yahoo OAuth session and league on startup."""
+    """Initialize the Yahoo OAuth session and league on startup.
+
+    Only the setup is guarded: the ``yield`` sits outside the ``try``, so an
+    exception raised while the server runs propagates instead of being caught
+    here and answered with a second ``yield`` (which asynccontextmanager turns
+    into ``RuntimeError: generator didn't stop after athrow()``, masking the
+    real error).
+    """
     try:
         sc = _get_oauth_session()
         lg = _get_league(sc, None)  # configured default league at startup
-        logger.info(f"Connected to Yahoo Fantasy league {cfg.league_id}")
-        yield {"sc": sc, "lg": lg}
     except Exception as e:
         logger.error(f"Failed to initialize Yahoo connection: {e}")
-        yield {"sc": None, "lg": None, "init_error": str(e)}
+        state = {"sc": None, "lg": None, "init_error": str(e)}
+    else:
+        logger.info(f"Connected to Yahoo Fantasy league {cfg.league_id}")
+        state = {"sc": sc, "lg": lg}
+    yield state
 
 
 # ---------------------------------------------------------------------------
