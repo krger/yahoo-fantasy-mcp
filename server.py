@@ -1684,6 +1684,24 @@ async def yahoo_get_transactions(
         return _handle_error(e)
 
 
+def _team_manager_name(tinfo: dict) -> str:
+    """The first manager's nickname from a ``lg.teams()`` entry.
+
+    Yahoo wraps each manager in its own key —
+    ``managers: [{"manager": {"nickname": ...}}]`` — so the nickname sits one
+    level below the list item, not on it. Co-managed teams list several; the
+    first is the primary manager.
+    """
+    managers = tinfo.get("managers")
+    if not isinstance(managers, list) or not managers:
+        return "Unknown"
+    first = managers[0] if isinstance(managers[0], dict) else {}
+    manager = first.get("manager", first)  # tolerate an unwrapped entry
+    if not isinstance(manager, dict):
+        return "Unknown"
+    return manager.get("nickname") or "Unknown"
+
+
 @mcp.tool(
     name="yahoo_list_teams",
     annotations={
@@ -1725,9 +1743,8 @@ async def yahoo_list_teams(params: ListTeamsInput = ListTeamsInput()) -> str:
                 "team_number": team_number,
                 "team_key": tk,
                 "name": tinfo.get("name", "Unknown"),
-                "manager": tinfo.get("managers", [{}])[0].get("nickname", "Unknown")
-                if tinfo.get("managers") else "Unknown",
-                "is_your_team": tinfo.get("is_owned_by_current_login", False),
+                "manager": _team_manager_name(tinfo),
+                "is_your_team": str(tinfo.get("is_owned_by_current_login")) in ("1", "True"),
             })
         # Sort by team_number for a stable, intuitive display order.
         team_list.sort(key=lambda t: (t["team_number"] is None, t["team_number"]))
