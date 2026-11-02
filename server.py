@@ -1474,6 +1474,32 @@ def _txn_data_fields(d: dict, transaction_data: dict) -> None:
         transaction_data["source_team_key"] = src_key
 
 
+def _txn_block(data: dict) -> dict:
+    """Locate the ``transactions`` collection in a raw transactions response.
+
+    Navigates ``fantasy_content.league[1].transactions``. ``league[1]`` is
+    usually a dict, but Yahoo sometimes wraps it in a list of dicts — both are
+    handled. A query with **no** matches (e.g. ``types=trade`` in a league
+    with no trades) comes back as ``"transactions": []`` rather than an empty
+    collection, so anything that isn't a dict normalizes to ``{}``.
+    """
+    fc = data.get("fantasy_content", {}) if isinstance(data, dict) else {}
+    league_data = fc.get("league", []) if isinstance(fc, dict) else []
+    if not isinstance(league_data, list) or len(league_data) < 2:
+        return {}
+    raw_txns = league_data[1]
+    block = None
+    if isinstance(raw_txns, dict):
+        block = raw_txns.get("transactions")
+    elif isinstance(raw_txns, list):
+        block = next(
+            (item["transactions"] for item in raw_txns
+             if isinstance(item, dict) and "transactions" in item),
+            None,
+        )
+    return block if isinstance(block, dict) else {}
+
+
 @mcp.tool(
     name="yahoo_get_transactions",
     annotations={
@@ -1536,27 +1562,7 @@ async def yahoo_get_transactions(
             json.dumps(data, indent=2, default=str)[:5000],
         )
 
-        # Navigate Yahoo's nested response:
-        # fantasy_content.league[1].transactions
-        fc = data.get("fantasy_content", {})
-        league_data = fc.get("league", [])
-
-        if not isinstance(league_data, list) or len(league_data) < 2:
-            return json.dumps({"transactions": [], "count": 0})
-
-        # league_data[1] is usually a dict, but Yahoo sometimes wraps
-        # it in a list of dicts — handle both.
-        raw_txns = league_data[1]
-        if isinstance(raw_txns, dict):
-            txns_block = raw_txns.get("transactions", {})
-        elif isinstance(raw_txns, list):
-            txns_block = {}
-            for item in raw_txns:
-                if isinstance(item, dict) and "transactions" in item:
-                    txns_block = item["transactions"]
-                    break
-        else:
-            txns_block = {}
+        txns_block = _txn_block(data)
 
         # If filtering by team, resolve team_key
         filter_team_key = None

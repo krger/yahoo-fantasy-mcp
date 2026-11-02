@@ -345,6 +345,30 @@ def test_txn_helpers_do_not_leak_state_between_calls():
     assert second == {"name": "B"}
 
 
+def _txn_response(league1):
+    return {"fantasy_content": {"league": [{"league_key": "470.l.1"}, league1]}}
+
+
+def test_txn_block_reads_dict_and_list_wrapped_forms():
+    block = {"count": 1, "0": {"transaction": []}}
+    assert server._txn_block(_txn_response({"transactions": block})) == block
+    assert server._txn_block(
+        _txn_response([{"other": 1}, {"transactions": block}])
+    ) == block
+
+
+def test_txn_block_empty_list_when_nothing_matches_is_empty_dict():
+    # Live 2026-11-02: types=trade in a league with no trades returns
+    # "transactions": [] -- which crashed the handler on .items().
+    assert server._txn_block(_txn_response({"transactions": []})) == {}
+
+
+def test_txn_block_tolerates_malformed_responses():
+    assert server._txn_block({}) == {}
+    assert server._txn_block({"fantasy_content": {"league": [{}]}}) == {}
+    assert server._txn_block(_txn_response("nope")) == {}
+
+
 # --- per-league season resolution -----------------------------------------
 #
 # The season a stat sort should target belongs to the league, not the wall
