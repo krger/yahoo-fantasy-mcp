@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
 
+# Least-privilege GITHUB_TOKEN: the job only checks out code and runs local
+# checks, so it needs read access to the repo and nothing else.
+permissions:
+  contents: read
+
 jobs:
   pytest:
     runs-on: ubuntu-latest
