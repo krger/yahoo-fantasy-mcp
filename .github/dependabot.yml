@@ -3,17 +3,33 @@ updates:
   # Python dependencies, resolved from uv.lock
   - package-ecosystem: "uv"
     directory: "/"
+    # Monthly: this schedule only drives routine currency bumps. Security
+    # updates open as soon as an alert appears, independent of it, and CI's
+    # pip-audit step fails on advisories Dependabot hasn't raised yet.
     schedule:
-      interval: "weekly"
+      interval: "monthly"
+    # Include transitive deps. The default ("direct") only bumps what
+    # pyproject.toml names, so everything pulled in via mcp et al. drifted
+    # until an advisory forced it (caught up by hand in v2.7.5-v2.7.7).
+    allow:
+      - dependency-type: "all"
     # Assign so the PR notifies via "participating" — the repo is unwatched,
     # and an unassigned bot PR mentions nobody, so it reaches no inbox.
     assignees:
       - "krger"
     open-pull-requests-limit: 10
     groups:
-      # One PR per week for routine non-major bumps; majors stay separate
-      # so they get individual review (CI runs uv sync --locked + pytest).
-      python-minor-patch:
+      # Split by what the merge means for a deploy: a runtime bump ships to
+      # prod (patch release + restart); a dev bump never reaches the
+      # --no-dev tree (no tag, no restart). Majors stay out of both groups
+      # so they get individual review.
+      runtime-minor-patch:
+        dependency-type: "production"
+        update-types:
+          - "minor"
+          - "patch"
+      dev-minor-patch:
+        dependency-type: "development"
         update-types:
           - "minor"
           - "patch"
