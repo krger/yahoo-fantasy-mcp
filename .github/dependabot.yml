@@ -19,10 +19,13 @@ updates:
       - "krger"
     open-pull-requests-limit: 10
     groups:
-      # Split by what the merge means for a deploy: a runtime bump ships to
-      # prod (patch release + restart); a dev bump never reaches the
-      # --no-dev tree (no tag, no restart). Majors stay out of both groups
-      # so they get individual review.
+      # Split by what the merge means for a deploy: a dev bump never reaches
+      # the --no-dev tree (no tag, no restart). The split is approximate:
+      # Dependabot puts only *direct* dev deps (pytest, ruff, hatchling) in
+      # the dev group and files every transitive dep, including pytest-only
+      # ones like pluggy/iniconfig, under runtime. So a runtime PR usually
+      # ships to prod, but `uv sync --no-dev` output decides. Majors stay
+      # out of both groups so they get individual review.
       runtime-minor-patch:
         dependency-type: "production"
         update-types:
