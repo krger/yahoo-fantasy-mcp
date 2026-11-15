@@ -72,6 +72,6 @@ These are deliberate design decisions, documented in `README.md` and
 ## Security practices in this repo
 
 - Private vulnerability reporting, Dependabot security updates, and secret scanning are enabled.
-- Dependabot opens grouped weekly dependency PRs for the `uv` lockfile and the pinned GitHub Actions (`.github/dependabot.yml`).
+- Dependabot opens grouped monthly dependency PRs for the `uv` lockfile (direct and transitive, runtime and dev grouped separately) and weekly PRs for the pinned GitHub Actions (`.github/dependabot.yml`).
 - CI (`.github/workflows/test.yml`) runs `ruff`, the test suite, and a `pip-audit` scan of the exported locked **production** tree on every push and pull request — a published advisory against a pinned dependency fails the build rather than waiting on a bump.
 - No secrets in version control: Yahoo tokens, client IDs/secrets, and edge credentials stay out of the repo.
